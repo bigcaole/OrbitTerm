@@ -1,15 +1,15 @@
 {
-  "version": "0.1.14",
+  "version": "0.1.15",
   "notes": "轨连终端更新示例：修复稳定性并优化多会话体验。",
   "pub_date": "2026-03-26T00:00:00Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "REPLACE_WITH_SIGNATURE",
-      "url": "https://github.com/bigcaole/OrbitTerm/releases/download/v0.1.14/OrbitTerm.app.tar.gz"
+      "url": "https://github.com/bigcaole/OrbitTerm/releases/download/v0.1.15/OrbitTerm.app.tar.gz"
     },
     "windows-x86_64": {
       "signature": "REPLACE_WITH_SIGNATURE",
-      "url": "https://github.com/bigcaole/OrbitTerm/releases/download/v0.1.14/OrbitTerm_0.1.14_x64_en-US.msi.zip"
+      "url": "https://github.com/bigcaole/OrbitTerm/releases/download/v0.1.15/OrbitTerm_0.1.15_x64_en-US.msi.zip"
     }
   }
 }

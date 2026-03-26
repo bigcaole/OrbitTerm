@@ -5,11 +5,6 @@ interface SettingsDrawerProps {
   open: boolean;
   onClose: () => void;
   onOpenAbout: () => void;
-  onQuickUpdate: () => Promise<void>;
-  isQuickUpdating: boolean;
-  quickUpdateMessage: string | null;
-  quickUpdateProgress: number;
-  quickUpdateError: string | null;
 }
 
 const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
@@ -46,12 +41,7 @@ const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
 export function SettingsDrawer({
   open,
   onClose,
-  onOpenAbout,
-  onQuickUpdate,
-  isQuickUpdating,
-  quickUpdateMessage,
-  quickUpdateProgress,
-  quickUpdateError
+  onOpenAbout
 }: SettingsDrawerProps): JSX.Element | null {
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
@@ -211,37 +201,8 @@ export function SettingsDrawer({
           </section>
 
           <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">
-            <h3 className="text-sm font-semibold text-slate-800">更新</h3>
-            <p className="text-xs text-slate-700">检查是否有新版本，并在可用时直接安装更新。</p>
-            <button
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isQuickUpdating}
-              onClick={() => {
-                void onQuickUpdate();
-              }}
-              type="button"
-            >
-              {isQuickUpdating ? '更新处理中...' : '检查并更新到最新版本'}
-            </button>
-            {quickUpdateMessage && <p className="text-xs text-slate-700">{quickUpdateMessage}</p>}
-            {(isQuickUpdating || quickUpdateProgress > 0) && (
-              <div className="h-1.5 rounded bg-slate-200">
-                <div
-                  className="h-1.5 rounded bg-[#2f6df4] transition-all duration-300"
-                  style={{ width: `${quickUpdateProgress}%` }}
-                />
-              </div>
-            )}
-            {quickUpdateError && (
-              <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
-                {quickUpdateError}
-              </p>
-            )}
-          </section>
-
-          <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">
             <h3 className="text-sm font-semibold text-slate-800">关于</h3>
-            <p className="text-xs text-slate-700">查看版本信息、开源致谢与更新检查。</p>
+            <p className="text-xs text-slate-700">查看版本信息、开源致谢与新版本下载提示。</p>
             <button
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
               onClick={onOpenAbout}

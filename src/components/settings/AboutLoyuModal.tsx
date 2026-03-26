@@ -1,25 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { useEffect, useState } from 'react';
 import { getAppVersion } from '../../services/appInfo';
 import { openExternalLink } from '../../services/externalLink';
-import { checkForUpdate, installAvailableUpdate, type UpdateCheckResult } from '../../services/updater';
-
-type UpdatePhase = 'idle' | 'checking' | 'latest' | 'available' | 'installing' | 'installed' | 'error';
+import { openReleasePage, type ReleaseNoticeState } from '../../services/updater';
 
 interface AboutLoyuModalProps {
   open: boolean;
   onClose: () => void;
+  releaseNotice: ReleaseNoticeState;
 }
 
 const GITHUB_URL = 'https://github.com/bigcaole/OrbitTerm';
 const WEBSITE_URL = 'https://orbitterm.app';
 
-export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Element | null {
-  const [version, setVersion] = useState<string>('0.1.2');
-  const [phase, setPhase] = useState<UpdatePhase>('idle');
-  const [updateHint, setUpdateHint] = useState<string>('可手动检查新版本。');
-  const [availableVersion, setAvailableVersion] = useState<string>('');
-  const [lastCheckResult, setLastCheckResult] = useState<UpdateCheckResult | null>(null);
+const formatCheckTime = (value: string | null): string => {
+  if (!value) {
+    return '尚未完成自动检测';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '尚未完成自动检测';
+  }
+  return date.toLocaleString('zh-CN', { hour12: false });
+};
+
+export function AboutLoyuModal({ open, onClose, releaseNotice }: AboutLoyuModalProps): JSX.Element | null {
+  const [version, setVersion] = useState<string>('0.1.15');
 
   useEffect(() => {
     if (!open) {
@@ -35,7 +40,7 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
       })
       .catch(() => {
         if (mounted) {
-          setVersion('0.1.2');
+          setVersion('0.1.15');
         }
       });
 
@@ -44,73 +49,9 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
     };
   }, [open]);
 
-  const updateStatusText = useMemo(() => {
-    if (phase === 'available' && availableVersion) {
-      return `检测到新版本 ${availableVersion}`;
-    }
-    return updateHint;
-  }, [phase, updateHint, availableVersion]);
-
   if (!open) {
     return null;
   }
-
-  const handleCheckUpdate = async (): Promise<void> => {
-    setPhase('checking');
-    setUpdateHint('正在检查更新...');
-    setAvailableVersion('');
-    setLastCheckResult(null);
-
-    try {
-      const result = await checkForUpdate(version);
-      setLastCheckResult(result);
-      if (result.shouldUpdate) {
-        setPhase('available');
-        setAvailableVersion(result.manifest?.version ?? '未知版本');
-        setUpdateHint(
-          result.channel === 'tauri'
-            ? '发现可用更新，可立即下载安装。'
-            : '发现可用更新，可打开下载链接获取最新版安装包。'
-        );
-        return;
-      }
-
-      setPhase('latest');
-      setUpdateHint('当前已是最新版本。');
-    } catch (_error) {
-      setPhase('error');
-      setUpdateHint('更新检查失败，请确认更新地址与签名配置。');
-    }
-  };
-
-  const handleInstallUpdate = async (): Promise<void> => {
-    if (phase !== 'available' || !lastCheckResult) {
-      return;
-    }
-
-    setPhase('installing');
-    setUpdateHint(
-      lastCheckResult.channel === 'tauri' ? '正在下载并安装更新...' : '正在打开最新版本下载链接...'
-    );
-
-    try {
-      await installAvailableUpdate(lastCheckResult);
-      if (lastCheckResult.channel === 'tauri') {
-        setPhase('installed');
-        setUpdateHint('更新安装完成，请重启应用以生效。');
-        toast.success('更新安装完成', {
-          description: '请手动重启 OrbitTerm。'
-        });
-      } else {
-        setPhase('available');
-        setUpdateHint('已打开下载链接，请安装后覆盖当前版本。');
-        toast.success('已打开下载页面');
-      }
-    } catch (_error) {
-      setPhase('error');
-      setUpdateHint('安装更新失败，请稍后重试。');
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm">
@@ -164,40 +105,33 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
         </div>
 
         <section className="mt-4 rounded-2xl border border-[#2a3f5d] bg-[#0d1a2b]/75 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-[#dceaff]">更新检查</h3>
-              <p className="mt-1 text-xs text-[#9fb5d7]">{updateStatusText}</p>
-            </div>
-            <div className="flex gap-2">
+          <h3 className="text-sm font-semibold text-[#dceaff]">版本下载提示</h3>
+          {releaseNotice.hasUpdate ? (
+            <div className="mt-2 space-y-2">
+              <p className="text-xs text-emerald-200">检测到可下载新版本：{releaseNotice.latestVersion ?? '未知版本'}</p>
+              <p className="text-[11px] text-[#9fb5d7]">
+                最近检测时间：{formatCheckTime(releaseNotice.checkedAt)}
+              </p>
               <button
-                className="rounded-lg border border-[#35547d] bg-[#12233a] px-3 py-1.5 text-xs font-medium text-[#d4e5ff] hover:bg-[#193152] disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={phase === 'checking' || phase === 'installing'}
+                className="rounded-lg border border-emerald-400/70 bg-emerald-400/10 px-3 py-1.5 text-xs font-medium text-emerald-100 hover:bg-emerald-400/20"
                 onClick={() => {
-                  void handleCheckUpdate();
+                  void openReleasePage(releaseNotice.releaseUrl ?? undefined);
                 }}
                 type="button"
               >
-                {phase === 'checking' ? '检查中...' : '检查更新'}
-              </button>
-              <button
-                className="rounded-lg border border-[#4d76ab] bg-[#1a3254] px-3 py-1.5 text-xs font-medium text-[#e2efff] hover:bg-[#24426b] disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={phase !== 'available' && phase !== 'installing'}
-                onClick={() => {
-                  void handleInstallUpdate();
-                }}
-                type="button"
-              >
-                {phase === 'installing'
-                  ? '处理中...'
-                  : lastCheckResult?.channel === 'github'
-                  ? '打开下载页'
-                  : '下载安装'}
+                前往下载页
               </button>
             </div>
-          </div>
+          ) : (
+            <div className="mt-2 space-y-2">
+              <p className="text-xs text-[#b7c9e7]">当前未检测到可下载新版本。</p>
+              <p className="text-[11px] text-[#9fb5d7]">
+                最近检测时间：{formatCheckTime(releaseNotice.checkedAt)}
+              </p>
+            </div>
+          )}
           <p className="mt-3 text-[11px] leading-5 text-[#8aa4cb]">
-            更新包来自静态 JSON 更新服务，发布前请在 `tauri.conf.json` 中配置正确的 `updater.endpoints` 与签名 `pubkey`。
+            应用内已移除直接更新功能，自动检测到新版本后会在本页面提示你下载。
           </p>
         </section>
       </div>

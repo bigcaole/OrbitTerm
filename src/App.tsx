@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { save as saveDialog } from '@tauri-apps/api/dialog';
-import { relaunch } from '@tauri-apps/api/process';
 import { Toaster, toast } from 'sonner';
 import { Step1 } from './components/wizard/Step1';
 import { Step2 } from './components/wizard/Step2';
@@ -24,7 +23,14 @@ import { runHealthCheck } from './services/inspector';
 import { sshQueryPwd, sshWrite } from './services/ssh';
 import { exportEncryptedBackup } from './services/vault';
 import { getAppVersion } from './services/appInfo';
-import { checkForUpdate, checkRepositoryPulse, installAvailableUpdate } from './services/updater';
+import {
+  checkReleaseAvailability,
+  readReleaseNoticeState,
+  rememberDailyLockCheck,
+  type ReleaseNoticeState,
+  wasDailyLockChecked,
+  writeReleaseNoticeState
+} from './services/updater';
 import { resolveThemePreset } from './theme/loyuTheme';
 import { buildHostKey } from './utils/hostKey';
 
@@ -42,8 +48,14 @@ const darkPanelButtonClass =
   'rounded-lg border border-[#5a79a8] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]';
 const SFTP_PANEL_MIN_WIDTH = 280;
 const SFTP_PANEL_MAX_WIDTH = 680;
-const UPDATE_CHECK_INTERVAL_MS = 20 * 60 * 1000;
-const MIN_VISIBLE_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
+const IDLE_RELEASE_CHECK_MS = 5 * 60 * 1000;
+
+const buildLocalDayLabel = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 function App(): JSX.Element {
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState<boolean>(false);
@@ -54,10 +66,7 @@ function App(): JSX.Element {
   const [isHostWizardOpen, setIsHostWizardOpen] = useState<boolean>(false);
   const [isNewTabModalOpen, setIsNewTabModalOpen] = useState<boolean>(false);
   const [selectedTabHostId, setSelectedTabHostId] = useState<string>('');
-  const [isQuickUpdating, setIsQuickUpdating] = useState<boolean>(false);
-  const [quickUpdateMessage, setQuickUpdateMessage] = useState<string | null>(null);
-  const [quickUpdateProgress, setQuickUpdateProgress] = useState<number>(0);
-  const [quickUpdateError, setQuickUpdateError] = useState<string | null>(null);
+  const [releaseNotice, setReleaseNotice] = useState<ReleaseNoticeState>(() => readReleaseNoticeState());
   const [editingHostId, setEditingHostId] = useState<string | null>(null);
   const [isSyncingPath, setIsSyncingPath] = useState<boolean>(false);
   const [sftpSyncRequest, setSftpSyncRequest] = useState<SftpSyncRequest | null>(null);
@@ -240,96 +249,41 @@ function App(): JSX.Element {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    let lastCheckAt = 0;
-    const releaseDedupKey = 'orbitterm:last-notified-release';
-    const repoDedupKey = 'orbitterm:last-notified-repo-sha';
-
-    const readStorage = (key: string): string | null => {
-      try {
-        return window.localStorage.getItem(key);
-      } catch (_error) {
-        return null;
-      }
-    };
-
-    const writeStorage = (key: string, value: string): void => {
-      try {
-        window.localStorage.setItem(key, value);
-      } catch (_error) {
-        // Ignore storage write failures.
-      }
-    };
-
-    const runCheck = async (force: boolean): Promise<void> => {
-      const now = Date.now();
-      if (!force && now - lastCheckAt < UPDATE_CHECK_INTERVAL_MS) {
-        return;
-      }
-      lastCheckAt = now;
-
-      try {
-        const version = await getAppVersion();
-        const updateResult = await checkForUpdate(version);
-        if (cancelled) {
-          return;
-        }
-
-        if (updateResult.shouldUpdate) {
-          const latestVersion = updateResult.manifest?.version ?? '新版本';
-          const releaseKey = `${updateResult.channel}:${latestVersion}`;
-          if (readStorage(releaseDedupKey) !== releaseKey) {
-            const description =
-              updateResult.channel === 'tauri'
-                ? '已发布可安装更新，可在设置中心点击“检查并更新到最新版本”。'
-                : '检测到新 Release，可在设置中心点击更新按钮下载并安装。';
-            toast.info(`发现新版本 ${latestVersion}`, { description });
-            writeStorage(releaseDedupKey, releaseKey);
+  const detectDownloadableRelease = useCallback(async (): Promise<void> => {
+    const checkedAt = new Date().toISOString();
+    try {
+      const version = await getAppVersion();
+      const result = await checkReleaseAvailability(version);
+      const nextNotice: ReleaseNoticeState = result.hasUpdate
+        ? {
+            hasUpdate: true,
+            latestVersion: result.latestVersion ?? null,
+            releaseUrl: result.releaseUrl ?? null,
+            checkedAt
           }
-        }
+        : {
+            hasUpdate: false,
+            latestVersion: null,
+            releaseUrl: result.releaseUrl ?? null,
+            checkedAt
+          };
 
-        const repoPulse = await checkRepositoryPulse(version);
-        if (cancelled || !repoPulse.hasNewCommits || updateResult.shouldUpdate) {
-          return;
-        }
-
-        const pulseKey = repoPulse.latestCommitSha ?? `ahead:${repoPulse.aheadBy}`;
-        if (readStorage(repoDedupKey) === pulseKey) {
-          return;
-        }
-
-        toast.message('检测到仓库有新提交', {
-          description: `主分支新增 ${repoPulse.aheadBy} 次提交，发布新安装包后会提示更新。`
-        });
-        writeStorage(repoDedupKey, pulseKey);
-      } catch (_error) {
-        // Ignore background update check errors.
-      }
-    };
-
-    void runCheck(true);
-    const intervalId = window.setInterval(() => {
-      void runCheck(false);
-    }, UPDATE_CHECK_INTERVAL_MS);
-
-    const onVisibilityChange = (): void => {
-      if (document.visibilityState !== 'visible') {
+      writeReleaseNoticeState(nextNotice);
+      setReleaseNotice(nextNotice);
+    } catch (_error) {
+      const previous = readReleaseNoticeState();
+      if (previous.checkedAt) {
         return;
       }
-      if (Date.now() - lastCheckAt < MIN_VISIBLE_RECHECK_INTERVAL_MS) {
-        return;
-      }
-      void runCheck(true);
-    };
-
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
+      const fallback: ReleaseNoticeState = {
+        hasUpdate: previous.hasUpdate,
+        latestVersion: previous.latestVersion,
+        releaseUrl: previous.releaseUrl,
+        checkedAt
+      };
+      writeReleaseNoticeState(fallback);
+      setReleaseNotice(fallback);
+    }
   }, []);
 
   useEffect(() => {
@@ -409,6 +363,13 @@ function App(): JSX.Element {
         toast.warning('金库已自动锁定', {
           description
         });
+        const dayLabel = buildLocalDayLabel(new Date());
+        if (wasDailyLockChecked(dayLabel)) {
+          return;
+        }
+        void detectDownloadableRelease().finally(() => {
+          rememberDailyLockCheck(dayLabel);
+        });
       });
     };
 
@@ -462,87 +423,49 @@ function App(): JSX.Element {
       }
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [appView, autoLockEnabled, autoLockMinutes, lockVault]);
+  }, [appView, autoLockEnabled, autoLockMinutes, detectDownloadableRelease, lockVault]);
 
-  const handleQuickUpdate = async (): Promise<void> => {
-    if (isQuickUpdating) {
+  useEffect(() => {
+    if (appView !== 'dashboard' || autoLockEnabled) {
       return;
     }
 
-    let progressTimer: number | null = null;
-    const stopProgressPulse = (): void => {
-      if (progressTimer !== null) {
-        window.clearInterval(progressTimer);
-        progressTimer = null;
-      }
-    };
-    const startProgressPulse = (maxProgress: number, step = 1, intervalMs = 450): void => {
-      stopProgressPulse();
-      progressTimer = window.setInterval(() => {
-        setQuickUpdateProgress((prev) => {
-          if (prev >= maxProgress) {
-            return prev;
-          }
-          return Math.min(maxProgress, prev + step);
-        });
-      }, intervalMs);
+    let lastActivityAt = Date.now();
+    let hasCheckedInCurrentIdleCycle = false;
+
+    const markActivity = (): void => {
+      lastActivityAt = Date.now();
+      hasCheckedInCurrentIdleCycle = false;
     };
 
-    setIsQuickUpdating(true);
-    setQuickUpdateError(null);
-    setQuickUpdateProgress(8);
-    setQuickUpdateMessage('正在检查更新...');
-    try {
-      startProgressPulse(24, 1, 420);
-      const version = await getAppVersion();
-      const result = await checkForUpdate(version);
-      stopProgressPulse();
-      if (!result.shouldUpdate) {
-        setQuickUpdateProgress(100);
-        setQuickUpdateMessage('当前已是最新版本。');
-        toast.success('当前已是最新版本');
+    const timerId = window.setInterval(() => {
+      const idleMs = Date.now() - lastActivityAt;
+      if (idleMs < IDLE_RELEASE_CHECK_MS || hasCheckedInCurrentIdleCycle) {
         return;
       }
+      hasCheckedInCurrentIdleCycle = true;
+      void detectDownloadableRelease();
+    }, 15000);
 
-      const latestVersion = result.manifest?.version ?? '新版本';
-      setQuickUpdateProgress(28);
-      setQuickUpdateMessage(`发现新版本 ${latestVersion}，准备下载安装...`);
-      toast.info(`检测到新版本 ${latestVersion}，正在自动更新...`);
-      setQuickUpdateProgress(62);
-      setQuickUpdateMessage('正在下载更新包...');
-      startProgressPulse(86, 1, 550);
-      await installAvailableUpdate(result);
-      stopProgressPulse();
-      setQuickUpdateProgress(90);
-      setQuickUpdateMessage('正在完成安装...');
+    const activityEvents: ReadonlyArray<keyof WindowEventMap> = [
+      'mousemove',
+      'mousedown',
+      'keydown',
+      'touchstart',
+      'focus'
+    ];
 
-      if (result.channel === 'tauri') {
-        setQuickUpdateProgress(100);
-        setQuickUpdateMessage('更新安装完成，正在重启应用...');
-        toast.success('更新安装完成，正在重启应用...');
-        try {
-          await relaunch();
-        } catch (_error) {
-          toast.info('请手动重启应用以完成更新。');
-        }
-      } else {
-        setQuickUpdateProgress(100);
-        setQuickUpdateMessage('已打开下载页面，请下载并安装新版本。');
-        toast.info('当前安装通道不支持静默覆盖，已打开下载页面。');
-      }
-    } catch (error) {
-      stopProgressPulse();
-      const fallback = '更新失败，请稍后重试。';
-      const message = error instanceof Error ? error.message : fallback;
-      setQuickUpdateError(message || fallback);
-      setQuickUpdateMessage('更新失败。');
-      setQuickUpdateProgress(0);
-      toast.error(message || fallback);
-    } finally {
-      stopProgressPulse();
-      setIsQuickUpdating(false);
+    for (const eventName of activityEvents) {
+      window.addEventListener(eventName, markActivity, { passive: true });
     }
-  };
+
+    return () => {
+      window.clearInterval(timerId);
+      for (const eventName of activityEvents) {
+        window.removeEventListener(eventName, markActivity);
+      }
+    };
+  }, [appView, autoLockEnabled, detectDownloadableRelease]);
 
   if (!hasCompletedOnboarding) {
     return (
@@ -1302,17 +1225,12 @@ function App(): JSX.Element {
       />
 
       <SettingsDrawer
-        isQuickUpdating={isQuickUpdating}
-        quickUpdateError={quickUpdateError}
-        quickUpdateMessage={quickUpdateMessage}
-        quickUpdateProgress={quickUpdateProgress}
         onClose={() => {
           setIsSettingsOpen(false);
         }}
         onOpenAbout={() => {
           setIsAboutOpen(true);
         }}
-        onQuickUpdate={handleQuickUpdate}
         open={isSettingsOpen}
       />
 
@@ -1321,6 +1239,7 @@ function App(): JSX.Element {
           setIsAboutOpen(false);
         }}
         open={isAboutOpen}
+        releaseNotice={releaseNotice}
       />
 
       <HostEditDialog

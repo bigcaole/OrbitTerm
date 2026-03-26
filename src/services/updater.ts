@@ -1,19 +1,16 @@
-import { checkUpdate, installUpdate, type UpdateManifest } from '@tauri-apps/api/updater';
 import { openExternalLink } from './externalLink';
 
-export interface UpdateCheckResult {
-  shouldUpdate: boolean;
-  manifest?: UpdateManifest;
-  channel: 'tauri' | 'github';
-  downloadUrl?: string;
+export interface ReleaseCheckResult {
+  hasUpdate: boolean;
+  latestVersion?: string;
   releaseUrl?: string;
 }
 
-export interface RepositoryPulseResult {
-  hasNewCommits: boolean;
-  aheadBy: number;
-  latestCommitSha?: string;
-  compareUrl?: string;
+export interface ReleaseNoticeState {
+  hasUpdate: boolean;
+  latestVersion: string | null;
+  releaseUrl: string | null;
+  checkedAt: string | null;
 }
 
 interface GithubReleaseAsset {
@@ -24,73 +21,16 @@ interface GithubReleaseAsset {
 interface GithubReleasePayload {
   tag_name: string;
   html_url: string;
-  published_at?: string;
   assets: GithubReleaseAsset[];
-}
-
-interface GithubCompareCommit {
-  sha: string;
-}
-
-interface GithubComparePayload {
-  status?: string;
-  ahead_by?: number;
-  html_url?: string;
-  commits?: GithubCompareCommit[];
 }
 
 const GITHUB_REPO = 'bigcaole/OrbitTerm';
 const GITHUB_LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-const GITHUB_COMPARE_API = `https://api.github.com/repos/${GITHUB_REPO}/compare`;
 const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
-const TAURI_UPDATE_CHECK_TIMEOUT_MS = 12_000;
 const GITHUB_REQUEST_TIMEOUT_MS = 10_000;
-const TAURI_INSTALL_TIMEOUT_MS = 5 * 60_000;
 
-const withTimeout = async <T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  timeoutMessage: string
-): Promise<T> => {
-  let timeoutHandle: number | null = null;
-
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timeoutHandle = window.setTimeout(() => {
-      reject(new Error(timeoutMessage));
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutHandle !== null) {
-      window.clearTimeout(timeoutHandle);
-    }
-  }
-};
-
-const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
-  const controller = new AbortController();
-  const timeoutHandle = window.setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-
-  try {
-    return await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        Accept: 'application/vnd.github+json'
-      }
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('更新请求超时，请检查网络后重试。');
-    }
-    throw error;
-  } finally {
-    window.clearTimeout(timeoutHandle);
-  }
-};
+const RELEASE_NOTICE_KEY = 'orbitterm:release-notice:v1';
+const DAILY_LOCK_CHECK_DAY_KEY = 'orbitterm:release-check:auto-lock:day';
 
 const normalizeVersion = (version: string): string => {
   return version.trim().replace(/^v/i, '').split('-')[0] ?? version.trim();
@@ -119,39 +59,103 @@ const compareVersions = (current: string, next: string): number => {
   return 0;
 };
 
-const pickDownloadUrl = (payload: GithubReleasePayload): string => {
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes('windows')) {
-    const exe = payload.assets.find((asset) => asset.name.endsWith('.exe'));
-    if (exe) {
-      return exe.browser_download_url;
-    }
-    const msi = payload.assets.find((asset) => asset.name.endsWith('.msi'));
-    if (msi) {
-      return msi.browser_download_url;
-    }
-  }
+const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
 
-  if (ua.includes('mac')) {
-    const dmg = payload.assets.find((asset) => asset.name.endsWith('.dmg'));
-    if (dmg) {
-      return dmg.browser_download_url;
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/vnd.github+json'
+      }
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('版本检测超时，请稍后重试。');
     }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutHandle);
   }
-
-  const fallback = payload.assets[0];
-  if (fallback) {
-    return fallback.browser_download_url;
-  }
-  return payload.html_url;
 };
 
-const checkGithubReleaseUpdate = async (
-  currentVersion: string
-): Promise<UpdateCheckResult> => {
+const defaultReleaseNoticeState = (): ReleaseNoticeState => ({
+  hasUpdate: false,
+  latestVersion: null,
+  releaseUrl: null,
+  checkedAt: null
+});
+
+const safeReadStorage = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const safeWriteStorage = (key: string, value: string): void => {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (_error) {
+    // Ignore storage write errors.
+  }
+};
+
+const safeRemoveStorage = (key: string): void => {
+  try {
+    window.localStorage.removeItem(key);
+  } catch (_error) {
+    // Ignore storage remove errors.
+  }
+};
+
+const serializeReleaseNotice = (notice: ReleaseNoticeState): string => {
+  return JSON.stringify(notice);
+};
+
+const parseReleaseNotice = (raw: string): ReleaseNoticeState => {
+  try {
+    const parsed = JSON.parse(raw) as Partial<ReleaseNoticeState>;
+    return {
+      hasUpdate: Boolean(parsed.hasUpdate),
+      latestVersion: typeof parsed.latestVersion === 'string' ? parsed.latestVersion : null,
+      releaseUrl: typeof parsed.releaseUrl === 'string' ? parsed.releaseUrl : null,
+      checkedAt: typeof parsed.checkedAt === 'string' ? parsed.checkedAt : null
+    };
+  } catch (_error) {
+    return defaultReleaseNoticeState();
+  }
+};
+
+const resolveReleaseUrl = (payload: GithubReleasePayload): string => {
+  const firstAsset = payload.assets[0];
+  return firstAsset?.browser_download_url ?? payload.html_url;
+};
+
+export const readReleaseNoticeState = (): ReleaseNoticeState => {
+  const raw = safeReadStorage(RELEASE_NOTICE_KEY);
+  if (!raw) {
+    return defaultReleaseNoticeState();
+  }
+  return parseReleaseNotice(raw);
+};
+
+export const writeReleaseNoticeState = (notice: ReleaseNoticeState): void => {
+  safeWriteStorage(RELEASE_NOTICE_KEY, serializeReleaseNotice(notice));
+};
+
+export const clearReleaseNoticeState = (): void => {
+  safeRemoveStorage(RELEASE_NOTICE_KEY);
+};
+
+export const checkReleaseAvailability = async (currentVersion: string): Promise<ReleaseCheckResult> => {
   const response = await fetchWithTimeout(GITHUB_LATEST_RELEASE_API, GITHUB_REQUEST_TIMEOUT_MS);
   if (!response.ok) {
-    throw new Error(`GitHub 更新检测失败（HTTP ${response.status}）`);
+    throw new Error(`版本检测失败（HTTP ${response.status}）`);
   }
 
   const payload = (await response.json()) as GithubReleasePayload;
@@ -159,87 +163,20 @@ const checkGithubReleaseUpdate = async (
   const hasUpdate = compareVersions(currentVersion, latestVersion) < 0;
 
   return {
-    shouldUpdate: hasUpdate,
-    manifest: {
-      version: latestVersion
-    } as UpdateManifest,
-    channel: 'github',
-    downloadUrl: hasUpdate ? pickDownloadUrl(payload) : payload.html_url,
-    releaseUrl: payload.html_url
+    hasUpdate,
+    latestVersion: hasUpdate ? latestVersion : undefined,
+    releaseUrl: resolveReleaseUrl(payload)
   };
 };
 
-export const checkForUpdate = async (
-  currentVersion: string
-): Promise<UpdateCheckResult> => {
-  try {
-    const result = await withTimeout(
-      checkUpdate(),
-      TAURI_UPDATE_CHECK_TIMEOUT_MS,
-      '内置更新检测超时，已自动切换到 Release 检测。'
-    );
-    return {
-      shouldUpdate: result.shouldUpdate,
-      manifest: result.manifest,
-      channel: 'tauri'
-    };
-  } catch (_error) {
-    return checkGithubReleaseUpdate(currentVersion);
-  }
+export const rememberDailyLockCheck = (dayLabel: string): void => {
+  safeWriteStorage(DAILY_LOCK_CHECK_DAY_KEY, dayLabel);
 };
 
-export const installAvailableUpdate = async (
-  context: UpdateCheckResult
-): Promise<void> => {
-  if (context.channel === 'tauri') {
-    await withTimeout(
-      installUpdate(),
-      TAURI_INSTALL_TIMEOUT_MS,
-      '更新安装超时，请稍后重试或前往 Release 页面手动安装。'
-    );
-    return;
-  }
-
-  if (!context.downloadUrl) {
-    throw new Error('未找到可用下载链接，请稍后重试。');
-  }
-
-  await openExternalLink(context.downloadUrl);
+export const wasDailyLockChecked = (dayLabel: string): boolean => {
+  return safeReadStorage(DAILY_LOCK_CHECK_DAY_KEY) === dayLabel;
 };
 
-export const checkRepositoryPulse = async (currentVersion: string): Promise<RepositoryPulseResult> => {
-  const baseTag = `v${normalizeVersion(currentVersion)}`;
-  const response = await fetchWithTimeout(
-    `${GITHUB_COMPARE_API}/${encodeURIComponent(baseTag)}...main`,
-    GITHUB_REQUEST_TIMEOUT_MS
-  );
-
-  if (response.status === 404) {
-    return {
-      hasNewCommits: false,
-      aheadBy: 0
-    };
-  }
-
-  if (!response.ok) {
-    throw new Error(`仓库更新检测失败（HTTP ${response.status}）`);
-  }
-
-  const payload = (await response.json()) as GithubComparePayload;
-  const aheadBy = Math.max(payload.ahead_by ?? 0, 0);
-  const latestCommitSha =
-    payload.commits && payload.commits.length > 0
-      ? payload.commits[payload.commits.length - 1]?.sha
-      : undefined;
-
-  return {
-    hasNewCommits: aheadBy > 0,
-    aheadBy,
-    latestCommitSha,
-    compareUrl: payload.html_url
-  };
-};
-
-export const openReleasePage = async (): Promise<void> => {
-  await openExternalLink(GITHUB_RELEASES_URL);
+export const openReleasePage = async (url?: string): Promise<void> => {
+  await openExternalLink(url ?? GITHUB_RELEASES_URL);
 };
