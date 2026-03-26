@@ -1,6 +1,9 @@
 name: build-installers
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
