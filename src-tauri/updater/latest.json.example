@@ -1,0 +1,23 @@
+{
+  "version": "0.1.1",
+  "notes": "修复 SSH 重连稳定性并优化 SFTP 体验。",
+  "pub_date": "2026-03-25T00:00:00Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "REPLACE_WITH_SIGNATURE",
+      "url": "https://updates.loyu.app/loyu-terminal/v0.1.1/darwin-aarch64/Loyu Terminal.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "REPLACE_WITH_SIGNATURE",
+      "url": "https://updates.loyu.app/loyu-terminal/v0.1.1/darwin-x86_64/Loyu Terminal.app.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "REPLACE_WITH_SIGNATURE",
+      "url": "https://updates.loyu.app/loyu-terminal/v0.1.1/windows-x86_64/Loyu Terminal.msi.zip"
+    },
+    "linux-x86_64": {
+      "signature": "REPLACE_WITH_SIGNATURE",
+      "url": "https://updates.loyu.app/loyu-terminal/v0.1.1/linux-x86_64/Loyu Terminal.AppImage.tar.gz"
+    }
+  }
+}

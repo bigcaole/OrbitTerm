@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# frontend build outputs
+dist/
+
+# tauri/rust build outputs
+src-tauri/target/
+
+# local caches
+*.tsbuildinfo
+.DS_Store
+
+# local deploy keys and secrets
+.deploy/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

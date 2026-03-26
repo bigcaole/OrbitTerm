@@ -1,0 +1,39 @@
+[package]
+name = "loyu-terminal-backend"
+version = "0.1.0"
+description = "Loyu Terminal Tauri backend with async SSH"
+authors = ["Loyu Team"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.75"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+hmac = "0.12"
+portable-pty = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+russh = "0.58"
+russh-sftp = "2.1.0"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "1.6", features = ["dialog-open", "dialog-save", "shell-open", "updater"] }
+thiserror = "1.0"
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time", "io-util"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+zeroize = "1.8"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true
+codegen-units = 1
+panic = "abort"

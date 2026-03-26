@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "Loyu Terminal",
+    "version": "0.1.0"
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": false,
+        "open": true,
+        "save": true
+      },
+      "shell": {
+        "all": false,
+        "open": "^https://(github\\.com|loyu\\.app|www\\.loyu\\.app)(/.*)?$"
+      }
+    },
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": [
+        "https://updates.loyu.app/loyu-terminal/latest.json"
+      ],
+      "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBKEY"
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.loyu.terminal",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico",
+        "icons/AppIcon.png",
+        "icons/AppIcon.icns",
+        "icons/AppIcon.ico"
+      ]
+    },
+    "windows": [
+      {
+        "title": "Loyu Terminal",
+        "width": 1240,
+        "height": 860,
+        "resizable": true
+      }
+    ]
+  }
+}
