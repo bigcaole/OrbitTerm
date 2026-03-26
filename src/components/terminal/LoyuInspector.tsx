@@ -96,7 +96,7 @@ export function LoyuInspector({
       <aside className="h-[min(86vh,860px)] w-full max-w-5xl overflow-hidden rounded-3xl border border-[#2a4266] bg-[#071121]/95 text-[#d7e5ff] shadow-2xl shadow-black/60">
         <div className="flex items-center justify-between border-b border-[#1d314f] px-4 py-3">
           <div>
-            <p className="text-sm font-semibold">Loyu Inspector</p>
+            <p className="text-sm font-semibold">Orbit Inspector</p>
             <p className="text-[11px] text-[#8ea4c7]">开发者诊断工具</p>
           </div>
           <button

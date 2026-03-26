@@ -2630,28 +2630,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loyu-terminal-backend"
-version = "0.1.6"
-dependencies = [
- "aes-gcm",
- "argon2",
- "hmac",
- "portable-pty",
- "reqwest 0.12.28",
- "russh",
- "russh-sftp",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tauri",
- "tauri-build",
- "thiserror 1.0.69",
- "tokio",
- "uuid",
- "zeroize",
-]
-
-[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3041,6 +3019,28 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "orbitterm-backend"
+version = "0.1.8"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "hmac",
+ "portable-pty",
+ "reqwest 0.12.28",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-build",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

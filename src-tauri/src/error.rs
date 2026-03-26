@@ -86,10 +86,10 @@ impl SshBackendError {
             Self::SftpAlreadyExists => "目标路径已存在，请更换名称后重试。".to_string(),
             Self::SftpUnsupported => "当前服务器不支持该 SFTP 操作。".to_string(),
             Self::SftpOperation(detail) => format!("SFTP 操作失败：{detail}"),
-            Self::AiConfigMissing(detail) => format!("Loyu AI 未正确配置：{detail}"),
-            Self::AiService(detail) => format!("Loyu AI 服务暂不可用：{detail}"),
+            Self::AiConfigMissing(detail) => format!("Orbit AI 未正确配置：{detail}"),
+            Self::AiService(detail) => format!("Orbit AI 服务暂不可用：{detail}"),
             Self::AiInvalidResponse => {
-                "Loyu AI 返回的内容无法识别为命令，请重试或换一种说法。".to_string()
+                "Orbit AI 返回的内容无法识别为命令，请重试或换一种说法。".to_string()
             }
             Self::Pty(detail) => format!("终端初始化失败：{detail}"),
             Self::Network(detail) => format!("网络异常：{detail}"),

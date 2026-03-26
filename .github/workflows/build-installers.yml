@@ -13,9 +13,9 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact_name: loyu-macos-installer
+            artifact_name: orbitterm-macos-installer
           - os: windows-latest
-            artifact_name: loyu-windows-installer
+            artifact_name: orbitterm-windows-installer
 
     runs-on: ${{ matrix.os }}
 

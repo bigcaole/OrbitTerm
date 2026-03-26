@@ -196,7 +196,7 @@ export function SettingsDrawer({
               onClick={onOpenAbout}
               type="button"
             >
-              关于罗屿
+              关于轨连终端
             </button>
           </section>
         </div>

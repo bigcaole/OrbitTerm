@@ -92,7 +92,7 @@ export function LoyuAiAssistant({
     <div className="fixed inset-0 z-[100] flex items-start justify-center bg-[#02050a]/50 px-4 pt-24 backdrop-blur-md">
       <section className="w-full max-w-2xl rounded-2xl border border-white/20 bg-[#0a1220]/90 p-4 shadow-2xl shadow-black/40">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-semibold text-[#dce8ff]">罗屿灵思 Loyu AI</p>
+          <p className="text-sm font-semibold text-[#dce8ff]">轨连灵思 Orbit AI</p>
           <button
             className="rounded-md px-2 py-1 text-xs text-[#9db2d4] hover:bg-white/10 hover:text-white"
             onClick={onClose}

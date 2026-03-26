@@ -99,7 +99,7 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
         setPhase('installed');
         setUpdateHint('更新安装完成，请重启应用以生效。');
         toast.success('更新安装完成', {
-          description: '请手动重启 Loyu Terminal。'
+          description: '请手动重启 OrbitTerm。'
         });
       } else {
         setPhase('available');
@@ -124,8 +124,8 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
       <div className="w-full max-w-2xl rounded-3xl border border-white/30 bg-[#0a1321]/85 p-6 text-slate-100 shadow-2xl backdrop-blur-2xl sm:p-7">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8fb2e6]">About Loyu</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">关于罗屿</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8fb2e6]">About OrbitTerm</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">关于轨连终端</h2>
             <p className="mt-2 text-sm text-[#b7c9e7]">版本 {version} · 为高强度运维与安全连接而生。</p>
           </div>
           <button
@@ -141,7 +141,7 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
           <section className="rounded-2xl border border-[#2a3f5d] bg-[#0d1a2b]/75 p-4">
             <h3 className="text-sm font-semibold text-[#dceaff]">致谢</h3>
             <p className="mt-2 text-xs leading-6 text-[#9fb5d7]">
-              Loyu Terminal 基于 React、Tauri、Rust、xterm.js 与 russh 构建，感谢所有开源维护者。
+              OrbitTerm 基于 React、Tauri、Rust、xterm.js 与 russh 构建，感谢所有开源维护者。
             </p>
           </section>
 

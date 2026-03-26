@@ -28,7 +28,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
 
   public componentDidCatch(error: unknown, info: ErrorInfo): void {
     const message = error instanceof Error ? `${error.message}\n${info.componentStack}` : info.componentStack;
-    console.error('[LoyuErrorBoundary]', message);
+    console.error('[OrbitTermErrorBoundary]', message);
   }
 
   public render(): ReactNode {
@@ -39,7 +39,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-3xl items-center px-4 py-10 sm:px-6">
         <section className="w-full rounded-3xl border border-rose-200 bg-rose-50/90 p-6 text-rose-900 shadow-xl sm:p-7">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-600">Loyu Terminal</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-600">OrbitTerm</p>
           <h1 className="mt-2 text-xl font-semibold">界面渲染异常</h1>
           <p className="mt-2 text-sm leading-6">
             应用捕获到前端运行时错误，已阻止白屏扩散。你可以点击“重新加载”恢复，或把错误信息反馈给开发者。

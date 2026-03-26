@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { save as saveDialog } from '@tauri-apps/api/dialog';
 import { relaunch } from '@tauri-apps/api/process';
@@ -52,6 +52,7 @@ function App(): JSX.Element {
   const [editingHostId, setEditingHostId] = useState<string | null>(null);
   const [isSyncingPath, setIsSyncingPath] = useState<boolean>(false);
   const [sftpSyncRequest, setSftpSyncRequest] = useState<SftpSyncRequest | null>(null);
+  const [isSftpCollapsed, setIsSftpCollapsed] = useState<boolean>(false);
   const [reconnectMessage, setReconnectMessage] = useState<string | null>(null);
   const [sshDiagnosticLogs, setSshDiagnosticLogs] = useState<SshDiagnosticLogEvent[]>([]);
   const [healthReport, setHealthReport] = useState<HealthCheckResponse | null>(null);
@@ -115,6 +116,7 @@ function App(): JSX.Element {
     }
     return hosts.find((host) => buildHostKey(host) === selectedTabHostId) ?? null;
   }, [hosts, selectedTabHostId]);
+  const previousSessionCountRef = useRef<number>(activeSessions.length);
 
   useEffect(() => {
     const prevHtmlOverflow = document.documentElement.style.overflow;
@@ -238,7 +240,7 @@ function App(): JSX.Element {
         const description =
           result.channel === 'tauri'
             ? '可在设置中心点击“检查并更新到最新版本”。'
-            : '可在“关于罗屿”中打开下载页面获取最新版。';
+            : '可在“关于轨连终端”中打开下载页面获取最新版。';
         toast.info(`发现新版本 ${latestVersion}`, { description });
       })
       .catch(() => {
@@ -266,6 +268,17 @@ function App(): JSX.Element {
     const firstHost = hosts[0];
     setSelectedTabHostId(firstHost ? buildHostKey(firstHost) : '');
   }, [hosts, isNewTabModalOpen, selectedTabHostId]);
+
+  useEffect(() => {
+    const previous = previousSessionCountRef.current;
+    if (previous <= 1 && activeSessions.length > 1) {
+      setIsSftpCollapsed(true);
+      toast.info('已进入多会话模式，SFTP 面板已自动收起。');
+    } else if (activeSessions.length <= 1) {
+      setIsSftpCollapsed(false);
+    }
+    previousSessionCountRef.current = activeSessions.length;
+  }, [activeSessions.length]);
 
   useEffect(() => {
     if (appView !== 'dashboard' || !autoLockEnabled) {
@@ -485,7 +498,7 @@ function App(): JSX.Element {
     const mm = String(today.getMonth() + 1).padStart(2, '0');
     const dd = String(today.getDate()).padStart(2, '0');
     const selectedPath = await saveDialog({
-      defaultPath: `loyu-vault-backup-${yyyy}${mm}${dd}.bin`
+      defaultPath: `orbitterm-vault-backup-${yyyy}${mm}${dd}.bin`
     });
 
     if (!selectedPath || Array.isArray(selectedPath)) {
@@ -600,7 +613,7 @@ function App(): JSX.Element {
         <header className="shrink-0 border-b border-white/55 px-5 py-4 sm:px-6">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Loyu Terminal · 罗屿</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">OrbitTerm · 轨连终端</p>
               <h1 className="mt-1 text-2xl font-semibold text-slate-900">Dashboard · 主机金库</h1>
               <p className="mt-1 text-sm text-slate-600">金库已解锁，可管理主机资产并建立多标签会话。</p>
             </div>
@@ -621,7 +634,7 @@ function App(): JSX.Element {
                 }}
                 type="button"
               >
-                关于罗屿
+                关于轨连终端
               </button>
             </div>
           </div>
@@ -766,10 +779,10 @@ function App(): JSX.Element {
           )}
 
           {dashboardSection === 'terminal' && (
-            <section className="flex h-full min-h-0 gap-3 overflow-hidden rounded-2xl border border-[#1f314e] bg-[#04060a] p-3">
+            <section className="relative flex h-full min-h-0 gap-3 overflow-hidden rounded-2xl border border-[#1f314e] bg-[#04060a] p-3">
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-[#1a2c47] bg-[#050a12] p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold text-[#d7e5ff]">罗屿终端</h2>
+                  <h2 className="text-sm font-semibold text-[#d7e5ff]">轨连终端</h2>
                   <div className="flex items-center gap-2">
                     <button
                       className="rounded-lg border border-[#39537a] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]"
@@ -810,6 +823,17 @@ function App(): JSX.Element {
                         type="button"
                       >
                         关闭当前 (Cmd/Ctrl+W)
+                      </button>
+                    )}
+                    {activeSessions.length > 1 && (
+                      <button
+                        className="rounded-lg border border-amber-300 bg-amber-200/90 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                        onClick={() => {
+                          setIsSftpCollapsed((prev) => !prev);
+                        }}
+                        type="button"
+                      >
+                        {isSftpCollapsed ? '展开 SFTP' : '收起 SFTP'}
                       </button>
                     )}
                   </div>
@@ -913,14 +937,27 @@ function App(): JSX.Element {
                 </div>
               </div>
 
-              <div className="h-full w-[380px] shrink-0 overflow-hidden">
-                <SftpManager
-                  className="h-full"
-                  onSendToTerminal={sendCommandToTerminal}
-                  sessionId={activeSessionId}
-                  syncRequest={sftpSyncRequest}
-                />
-              </div>
+              {!isSftpCollapsed && (
+                <div className="h-full w-[380px] shrink-0 overflow-hidden">
+                  <SftpManager
+                    className="h-full"
+                    onSendToTerminal={sendCommandToTerminal}
+                    sessionId={activeSessionId}
+                    syncRequest={sftpSyncRequest}
+                  />
+                </div>
+              )}
+              {activeSessions.length > 1 && isSftpCollapsed && (
+                <button
+                  className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-xl border border-amber-300 bg-amber-200 px-3 py-2 text-xs font-semibold text-amber-900 shadow-lg hover:bg-amber-100"
+                  onClick={() => {
+                    setIsSftpCollapsed(false);
+                  }}
+                  type="button"
+                >
+                  展开 SFTP
+                </button>
+              )}
             </section>
           )}
         </div>

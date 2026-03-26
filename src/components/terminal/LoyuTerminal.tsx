@@ -67,6 +67,16 @@ export function LoyuTerminal({
   const dropNoticeShownRef = useRef<boolean>(false);
   const flushRafRef = useRef<number>(0);
   const disposedRef = useRef<boolean>(false);
+  const onSessionClosedRef = useRef<() => void>(onSessionClosed);
+  const onTerminalErrorRef = useRef<(message: string) => void>(onTerminalError);
+
+  useEffect(() => {
+    onSessionClosedRef.current = onSessionClosed;
+  }, [onSessionClosed]);
+
+  useEffect(() => {
+    onTerminalErrorRef.current = onTerminalError;
+  }, [onTerminalError]);
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -123,7 +133,7 @@ export function LoyuTerminal({
       const rows = terminal.rows;
       if (cols > 0 && rows > 0) {
         void sshResize(sessionId, cols, rows).catch(() => {
-          onTerminalError('终端窗口同步失败，请检查网络连接。');
+          onTerminalErrorRef.current('终端窗口同步失败，请检查网络连接。');
         });
       }
     };
@@ -218,7 +228,7 @@ export function LoyuTerminal({
 
     const dataDisposable = terminal.onData((data) => {
       void sshWrite(sessionId, data).catch(() => {
-        onTerminalError('发送输入失败，连接可能已断开。');
+        onTerminalErrorRef.current('发送输入失败，连接可能已断开。');
       });
     });
 
@@ -244,7 +254,7 @@ export function LoyuTerminal({
       if (eventSessionId && eventSessionId !== sessionId) {
         return;
       }
-      onTerminalError(event.payload.message);
+      onTerminalErrorRef.current(event.payload.message);
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -257,7 +267,7 @@ export function LoyuTerminal({
       if (event.payload.sessionId !== sessionId) {
         return;
       }
-      onSessionClosed();
+      onSessionClosedRef.current();
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -323,7 +333,7 @@ export function LoyuTerminal({
       terminalRef.current = null;
       terminal.dispose();
     };
-  }, [sessionId, onSessionClosed, onTerminalError]);
+  }, [sessionId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

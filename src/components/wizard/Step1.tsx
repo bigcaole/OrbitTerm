@@ -45,7 +45,7 @@ export function Step1(): JSX.Element {
       <div className="space-y-2">
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
           主机名称 (可选)
-          <Tooltip content="用于在罗屿终端中识别该主机。可留空，系统会自动使用“地址:端口”作为默认名称。" />
+          <Tooltip content="用于在轨连终端中识别该主机。可留空，系统会自动使用“地址:端口”作为默认名称。" />
         </label>
         <input className={inputClassName} placeholder="可留空，默认使用 地址:端口" {...register('name')} />
         {errors.name && <p className="text-xs text-rose-500">{errors.name.message}</p>}

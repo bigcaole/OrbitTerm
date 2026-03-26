@@ -22,7 +22,7 @@ export function UnlockScreen(): JSX.Element {
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.42),transparent_35%),radial-gradient(circle_at_78%_16%,rgba(190,220,255,0.5),transparent_32%),radial-gradient(circle_at_50%_82%,rgba(225,238,255,0.75),transparent_45%)]" />
       <section className="glass-card relative w-full max-w-xl rounded-3xl border border-white/60 bg-white/45 p-10 shadow-glass">
         <p className="text-center text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
-          Loyu Terminal · Vault
+          OrbitTerm · Vault
         </p>
         <h1 className="mt-4 text-center text-2xl font-semibold text-slate-900">金库解锁</h1>
         <p className="mt-2 text-center text-sm text-slate-600">输入主密码后按 Enter 解锁。</p>

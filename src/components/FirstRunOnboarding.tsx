@@ -124,7 +124,7 @@ export function FirstRunOnboarding(): JSX.Element {
       <section className="relative w-full max-w-3xl rounded-3xl border border-[#29456d] bg-[#071322]/80 p-7 text-[#e4eeff] shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur-2xl sm:p-9">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8fb0de]">Loyu Terminal</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8fb0de]">OrbitTerm</p>
             <h1 className="mt-2 text-2xl font-semibold text-white">首次启动引导</h1>
           </div>
           <p className="text-xs text-[#9cb7db]">步骤 {step}/4</p>
@@ -139,9 +139,9 @@ export function FirstRunOnboarding(): JSX.Element {
 
         {step === 1 && (
           <div className="mt-8 space-y-5">
-            <h2 className="text-3xl font-semibold leading-tight text-white">欢迎来到罗屿</h2>
+            <h2 className="text-3xl font-semibold leading-tight text-white">欢迎来到轨连终端</h2>
             <p className="max-w-2xl text-sm leading-7 text-[#b8cae7]">
-              罗屿强调三件事：安全、直观、智能。你将在几分钟内完成金库初始化，并准备好第一台服务器连接。
+              轨连终端强调三件事：安全、直观、智能。你将在几分钟内完成金库初始化，并准备好第一台服务器连接。
             </p>
             <div className="grid gap-3 sm:grid-cols-3">
               <article className="rounded-2xl border border-[#2a466d] bg-[#0a1a2d]/70 p-4">

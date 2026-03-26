@@ -46,7 +46,7 @@ async fn check_network() -> HealthCheckItem {
             label: "网络权限".to_string(),
             status: "warn".to_string(),
             message: format!("网络检测失败：{err}"),
-            suggestion: Some("请允许应用访问网络，并确认防火墙未拦截 Loyu。".to_string()),
+            suggestion: Some("请允许应用访问网络，并确认防火墙未拦截 OrbitTerm。".to_string()),
         },
     }
 }
@@ -72,8 +72,8 @@ async fn check_app_data_writable(app: &AppHandle) -> HealthCheckItem {
         };
     }
 
-    dir.push(".loyu-healthcheck.tmp");
-    if let Err(err) = fs::write(&dir, b"loyu-healthcheck").await {
+    dir.push(".orbitterm-healthcheck.tmp");
+    if let Err(err) = fs::write(&dir, b"orbitterm-healthcheck").await {
         return HealthCheckItem {
             id: "app_data".to_string(),
             label: "数据目录权限".to_string(),
@@ -110,7 +110,7 @@ async fn check_webview_runtime() -> HealthCheckItem {
             status: "warn".to_string(),
             message: format!("未检测到可用的 WebView2 Runtime：{err}"),
             suggestion: Some(
-                "请安装或修复 Microsoft Edge WebView2 Runtime（Evergreen），再重启 Loyu。"
+                "请安装或修复 Microsoft Edge WebView2 Runtime（Evergreen），再重启 OrbitTerm。"
                     .to_string(),
             ),
         },

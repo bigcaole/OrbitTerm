@@ -550,7 +550,7 @@ fn map_ai_http_error(err: reqwest::Error) -> SshBackendError {
 }
 
 fn system_prompt() -> &'static str {
-    "你是 Loyu Terminal 的 Linux 命令助手。任务是把用户自然语言转换成一条可直接复制的 Shell 命令。\
+    "你是 OrbitTerm 的 Linux 命令助手。任务是把用户自然语言转换成一条可直接复制的 Shell 命令。\
 输出规则：\
 1) 只输出命令本体，不要解释，不要代码块，不要前后缀。\
 2) 优先使用通用 Linux/macOS 命令（如 lsof/find/grep/awk/sed）。\
@@ -559,7 +559,7 @@ fn system_prompt() -> &'static str {
 }
 
 fn system_prompt_ssh_fix() -> &'static str {
-    "你是 Loyu Terminal 的 SSH 故障诊断助手。\
+    "你是 OrbitTerm 的 SSH 故障诊断助手。\
 请结合报错与日志给出工程可执行方案。\
 输出要求：\
 1) 使用中文。\
