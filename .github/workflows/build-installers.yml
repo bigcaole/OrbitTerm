@@ -38,8 +38,8 @@ jobs:
       - name: Build Tauri bundle
         shell: bash
         run: |
-          export TAURI_CONFIG='{"tauri":{"updater":{"active":false}}}'
-          npx tauri build
+          jq '.tauri.updater.active = false' src-tauri/tauri.conf.json > /tmp/tauri.ci.conf.json
+          npx tauri build --config /tmp/tauri.ci.conf.json
 
       - name: Upload macOS artifacts
         if: matrix.os == 'macos-latest'
