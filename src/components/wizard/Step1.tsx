@@ -38,12 +38,16 @@ export function Step1(): JSX.Element {
 
   return (
     <form className="space-y-5" onSubmit={handleSubmit(onSubmit)}>
+      <div className="rounded-2xl border border-white/70 bg-white/60 p-4 text-xs leading-6 text-slate-600">
+        快速添加只需：主机地址 + 端口 + 登录用户名 + 认证信息。主机名称与身份名称可留空，系统会自动生成。
+      </div>
+
       <div className="space-y-2">
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-          主机名称
-          <Tooltip content="用于在罗屿终端中识别该主机，建议使用具有业务含义的名字，例如“生产数据库-上海”。" />
+          主机名称 (可选)
+          <Tooltip content="用于在罗屿终端中识别该主机。可留空，系统会自动使用“地址:端口”作为默认名称。" />
         </label>
-        <input className={inputClassName} placeholder="例如：生产应用服务器" {...register('name')} />
+        <input className={inputClassName} placeholder="可留空，默认使用 地址:端口" {...register('name')} />
         {errors.name && <p className="text-xs text-rose-500">{errors.name.message}</p>}
       </div>
 
@@ -123,10 +127,10 @@ export function Step1(): JSX.Element {
           <div className="grid gap-5 sm:grid-cols-2">
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                新身份名称
-                <Tooltip content="例如“生产服务器密钥”。用于在身份列表中快速识别这一套凭据。" />
+                新身份名称 (可选)
+                <Tooltip content="例如“生产服务器密钥”。可留空，系统将自动按“用户名@地址”生成。" />
               </label>
-              <input className={inputClassName} placeholder="例如：生产服务器密钥" {...register('identityName')} />
+              <input className={inputClassName} placeholder="可留空，自动生成" {...register('identityName')} />
               {errors.identityName && <p className="text-xs text-rose-500">{errors.identityName.message}</p>}
             </div>
 

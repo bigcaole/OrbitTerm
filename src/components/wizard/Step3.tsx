@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { step3Schema, type Step3FormValues } from '../../schemas/hostSchemas';
@@ -15,6 +16,7 @@ export function Step3(): JSX.Element {
   const prevStep = useHostStore((state) => state.prevStep);
   const isSavingVault = useHostStore((state) => state.isSavingVault);
   const hosts = useHostStore((state) => state.hosts);
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   const {
     register,
@@ -33,6 +35,20 @@ export function Step3(): JSX.Element {
 
   return (
     <form className="space-y-5" onSubmit={handleSubmit(onSubmit)}>
+      <div className="rounded-2xl border border-white/70 bg-white/60 p-4 text-xs leading-6 text-slate-600">
+        默认高级策略已预设（10 秒超时、KeepAlive 开启、压缩开启、严格指纹校验）。你可以直接保存，或展开高级参数自定义。
+        <button
+          className="ml-2 rounded-lg border border-white/80 bg-white/70 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-white"
+          onClick={() => {
+            setShowAdvanced((prev) => !prev);
+          }}
+          type="button"
+        >
+          {showAdvanced ? '收起高级参数' : '展开高级参数'}
+        </button>
+      </div>
+
+      <div className={showAdvanced ? 'space-y-5' : 'hidden'}>
       <div className="space-y-2">
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
           选择跳板机 (推荐)
@@ -106,6 +122,7 @@ export function Step3(): JSX.Element {
         </label>
         <input className={inputClassName} placeholder="例如：生产,数据库,华东" {...register('tagsText')} />
         {errors.tagsText && <p className="text-xs text-rose-500">{errors.tagsText.message}</p>}
+      </div>
       </div>
 
       <div className="flex justify-between pt-2">

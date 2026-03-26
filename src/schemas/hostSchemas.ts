@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
-const hostPattern = /^(?!-)([a-zA-Z0-9-]{1,63}\.)*[a-zA-Z0-9-]{1,63}$|^((25[0-5]|2[0-4]\d|1?\d?\d)(\.|$)){4}$|^\[[0-9a-fA-F:]+\]$/;
+export const hostPattern = /^(?!-)([a-zA-Z0-9-]{1,63}\.)*[a-zA-Z0-9-]{1,63}$|^((25[0-5]|2[0-4]\d|1?\d?\d)(\.|$)){4}$|^\[[0-9a-fA-F:]+\]$/;
 
 export const step1Schema = z
   .object({
-    name: z.string().min(2, '主机名称至少需要 2 个字符').max(50, '主机名称不能超过 50 个字符'),
+    name: z.string().max(50, '主机名称不能超过 50 个字符').default(''),
     address: z
       .string()
       .min(2, '请输入有效的主机地址')
@@ -27,14 +27,6 @@ export const step1Schema = z
     }
 
     if (data.identityMode === 'new') {
-      if (data.identityName.trim().length < 2) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['identityName'],
-          message: '新身份名称至少需要 2 个字符'
-        });
-      }
-
       if (data.identityUsername.trim().length < 1) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

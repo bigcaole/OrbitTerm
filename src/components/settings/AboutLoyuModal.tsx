@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { getAppVersion } from '../../services/appInfo';
 import { openExternalLink } from '../../services/externalLink';
-import { checkForUpdate, installAvailableUpdate } from '../../services/updater';
+import { checkForUpdate, installAvailableUpdate, type UpdateCheckResult } from '../../services/updater';
 
 type UpdatePhase = 'idle' | 'checking' | 'latest' | 'available' | 'installing' | 'installed' | 'error';
 
@@ -15,10 +15,11 @@ const GITHUB_URL = 'https://github.com/bigcaole/Loyu-Terminal';
 const WEBSITE_URL = 'https://loyu.app';
 
 export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Element | null {
-  const [version, setVersion] = useState<string>('0.1.0');
+  const [version, setVersion] = useState<string>('0.1.2');
   const [phase, setPhase] = useState<UpdatePhase>('idle');
   const [updateHint, setUpdateHint] = useState<string>('可手动检查新版本。');
   const [availableVersion, setAvailableVersion] = useState<string>('');
+  const [lastCheckResult, setLastCheckResult] = useState<UpdateCheckResult | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -34,7 +35,7 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
       })
       .catch(() => {
         if (mounted) {
-          setVersion('0.1.0');
+          setVersion('0.1.2');
         }
       });
 
@@ -58,13 +59,19 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
     setPhase('checking');
     setUpdateHint('正在检查更新...');
     setAvailableVersion('');
+    setLastCheckResult(null);
 
     try {
-      const result = await checkForUpdate();
+      const result = await checkForUpdate(version);
+      setLastCheckResult(result);
       if (result.shouldUpdate) {
         setPhase('available');
         setAvailableVersion(result.manifest?.version ?? '未知版本');
-        setUpdateHint('发现可用更新，可立即下载安装。');
+        setUpdateHint(
+          result.channel === 'tauri'
+            ? '发现可用更新，可立即下载安装。'
+            : '发现可用更新，可打开下载链接获取最新版安装包。'
+        );
         return;
       }
 
@@ -77,25 +84,40 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
   };
 
   const handleInstallUpdate = async (): Promise<void> => {
-    if (phase !== 'available') {
+    if (phase !== 'available' || !lastCheckResult) {
       return;
     }
 
     setPhase('installing');
-    setUpdateHint('正在下载并安装更新...');
+    setUpdateHint(
+      lastCheckResult.channel === 'tauri' ? '正在下载并安装更新...' : '正在打开最新版本下载链接...'
+    );
 
     try {
-      await installAvailableUpdate();
-      setPhase('installed');
-      setUpdateHint('更新安装完成，请重启应用以生效。');
-      toast.success('更新安装完成', {
-        description: '请手动重启 Loyu Terminal。'
-      });
+      await installAvailableUpdate(lastCheckResult);
+      if (lastCheckResult.channel === 'tauri') {
+        setPhase('installed');
+        setUpdateHint('更新安装完成，请重启应用以生效。');
+        toast.success('更新安装完成', {
+          description: '请手动重启 Loyu Terminal。'
+        });
+      } else {
+        setPhase('available');
+        setUpdateHint('已打开下载链接，请安装后覆盖当前版本。');
+        toast.success('已打开下载页面');
+      }
     } catch (_error) {
       setPhase('error');
       setUpdateHint('安装更新失败，请稍后重试。');
     }
   };
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    void handleCheckUpdate();
+  }, [open, version]);
 
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm">
@@ -173,7 +195,11 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
                 }}
                 type="button"
               >
-                {phase === 'installing' ? '安装中...' : '下载安装'}
+                {phase === 'installing'
+                  ? '处理中...'
+                  : lastCheckResult?.channel === 'github'
+                  ? '打开下载页'
+                  : '下载安装'}
               </button>
             </div>
           </div>

@@ -8,6 +8,7 @@ import { Step3 } from './components/wizard/Step3';
 import { StepIndicator } from './components/wizard/StepIndicator';
 import { UnlockScreen } from './components/UnlockScreen';
 import { FirstRunOnboarding } from './components/FirstRunOnboarding';
+import { HostEditDialog, type HostEditFormValues } from './components/HostEditDialog';
 import { LoyuTerminal } from './components/terminal/LoyuTerminal';
 import { LoyuAiAssistant } from './components/terminal/LoyuAiAssistant';
 import { LoyuInspector } from './components/terminal/LoyuInspector';
@@ -21,6 +22,8 @@ import type { HealthCheckResponse, SshDiagnosticLogEvent } from './services/insp
 import { runHealthCheck } from './services/inspector';
 import { sshQueryPwd, sshWrite } from './services/ssh';
 import { exportEncryptedBackup } from './services/vault';
+import { getAppVersion } from './services/appInfo';
+import { checkForUpdate } from './services/updater';
 import { resolveThemePreset } from './theme/loyuTheme';
 import { buildHostKey } from './utils/hostKey';
 
@@ -30,11 +33,15 @@ interface SftpSyncRequest {
   nonce: number;
 }
 
+type DashboardSection = 'hosts' | 'terminal' | 'wizard';
+
 function App(): JSX.Element {
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState<boolean>(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
+  const [dashboardSection, setDashboardSection] = useState<DashboardSection>('hosts');
+  const [editingHostId, setEditingHostId] = useState<string | null>(null);
   const [isSyncingPath, setIsSyncingPath] = useState<boolean>(false);
   const [sftpSyncRequest, setSftpSyncRequest] = useState<SftpSyncRequest | null>(null);
   const [reconnectMessage, setReconnectMessage] = useState<string | null>(null);
@@ -56,9 +63,12 @@ function App(): JSX.Element {
   const setTerminalError = useHostStore((state) => state.setTerminalError);
   const currentStep = useHostStore((state) => state.currentStep);
   const submittedHost = useHostStore((state) => state.submittedHost);
+  const isSavingVault = useHostStore((state) => state.isSavingVault);
   const saveError = useHostStore((state) => state.saveError);
   const reset = useHostStore((state) => state.reset);
   const lockVault = useHostStore((state) => state.lockVault);
+  const updateHostAndIdentity = useHostStore((state) => state.updateHostAndIdentity);
+  const deleteHost = useHostStore((state) => state.deleteHost);
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
   const terminalOpacity = useUiSettingsStore((state) => state.terminalOpacity);
@@ -68,6 +78,24 @@ function App(): JSX.Element {
   const hasCompletedOnboarding = useUiSettingsStore((state) => state.hasCompletedOnboarding);
 
   const activeThemePreset = useMemo(() => resolveThemePreset(themePresetId), [themePresetId]);
+  const editingHost = useMemo(() => {
+    if (!editingHostId) {
+      return null;
+    }
+    return hosts.find((host) => buildHostKey(host) === editingHostId) ?? null;
+  }, [editingHostId, hosts]);
+  const editingIdentity = useMemo(() => {
+    if (!editingHost) {
+      return null;
+    }
+    return identities.find((identity) => identity.id === editingHost.identityId) ?? null;
+  }, [editingHost, identities]);
+  const editingLinkedHostCount = useMemo(() => {
+    if (!editingIdentity) {
+      return 0;
+    }
+    return hosts.filter((host) => host.identityId === editingIdentity.id).length;
+  }, [editingIdentity, hosts]);
 
   const performHealthCheck = async (showOkToast: boolean): Promise<void> => {
     try {
@@ -164,6 +192,31 @@ function App(): JSX.Element {
       if (unlisten) {
         unlisten();
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void getAppVersion()
+      .then((version) => checkForUpdate(version))
+      .then((result) => {
+        if (cancelled || !result.shouldUpdate) {
+          return;
+        }
+        const latestVersion = result.manifest?.version ?? '新版本';
+        const description =
+          result.channel === 'tauri'
+            ? '可在「关于罗屿」中一键下载安装。'
+            : '可在「关于罗屿」中打开下载页面获取最新版。';
+        toast.info(`发现新版本 ${latestVersion}`, { description });
+      })
+      .catch(() => {
+        // Ignore background update check errors.
+      });
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -375,6 +428,61 @@ function App(): JSX.Element {
     }
   };
 
+  const handleDeleteHost = async (hostId: string, hostName: string): Promise<void> => {
+    const shouldDelete = window.confirm(`确认删除主机「${hostName}」吗？该操作会同步更新本地金库。`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    try {
+      await deleteHost(hostId);
+    } catch (error) {
+      const fallback = '删除主机失败，请稍后重试。';
+      const message = error instanceof Error ? error.message : fallback;
+      toast.error(message || fallback);
+    }
+  };
+
+  const handleSaveHostEdit = async (values: HostEditFormValues): Promise<void> => {
+    if (!editingHostId) {
+      return;
+    }
+
+    try {
+      await updateHostAndIdentity(editingHostId, {
+        basicInfo: {
+          name: values.name,
+          address: values.address,
+          port: values.port,
+          description: values.description
+        },
+        identity: {
+          name: values.identityName,
+          username: values.identityUsername,
+          authConfig:
+            values.method === 'password'
+              ? {
+                  method: 'password',
+                  password: values.password?.trim() ?? '',
+                  privateKey: '',
+                  passphrase: ''
+                }
+              : {
+                  method: 'privateKey',
+                  password: '',
+                  privateKey: values.privateKey?.trim() ?? '',
+                  passphrase: values.passphrase ?? ''
+                }
+        }
+      });
+      setEditingHostId(null);
+    } catch (error) {
+      const fallback = '保存主机编辑失败，请稍后重试。';
+      const message = error instanceof Error ? error.message : fallback;
+      toast.error(message || fallback);
+    }
+  };
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl items-center px-4 py-10 sm:px-6 lg:px-8">
       <section className="glass-card w-full overflow-hidden rounded-3xl border border-frost-border bg-frost-panel shadow-glass">
@@ -408,50 +516,124 @@ function App(): JSX.Element {
           </div>
         </div>
 
-        <div className="space-y-8 px-6 py-6 sm:px-8">
-          <div className="rounded-2xl border border-white/65 bg-white/50 p-5">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-slate-800">主机列表</h2>
-              <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-600">
-                共 {hosts.length} 台
-              </span>
-            </div>
-            <div className="mt-4 space-y-3">
-              {hosts.length === 0 && (
-                <p className="rounded-xl border border-dashed border-white/70 bg-white/65 px-4 py-3 text-sm text-slate-600">
-                  当前金库中暂无主机，请使用下方向导新增。
-                </p>
-              )}
-              {hosts.map((host, index) => (
-                <article className="rounded-xl border border-white/70 bg-white/70 px-4 py-3" key={`${host.basicInfo.address}-${host.identityId}-${index}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-800">{host.basicInfo.name}</p>
-                      <p className="mt-1 text-xs text-slate-600">
-                        {(identities.find((identity) => identity.id === host.identityId)?.username ?? 'unknown')}@
-                        {host.basicInfo.address}:{host.basicInfo.port}
-                      </p>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        身份：{identities.find((identity) => identity.id === host.identityId)?.name ?? '未绑定身份'}
-                      </p>
-                    </div>
-                    <button
-                      className="rounded-lg bg-[#0a3a78] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0d4b98]"
-                      disabled={isConnectingTerminal}
-                      onClick={() => {
-                        void openTerminal(host);
-                      }}
-                      type="button"
-                    >
-                      {isConnectingTerminal ? '连接中...' : '新建 Tab'}
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
+        <div className="space-y-6 px-6 py-6 sm:px-8">
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/65 bg-white/45 p-2.5">
+            {[
+              { id: 'hosts', label: '资产管理' },
+              { id: 'terminal', label: '终端会话' },
+              { id: 'wizard', label: '新增主机' }
+            ].map((tab) => (
+              <button
+                className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                  dashboardSection === tab.id
+                    ? 'bg-[#133c74] text-white shadow'
+                    : 'bg-white/70 text-slate-700 hover:bg-white'
+                }`}
+                key={tab.id}
+                onClick={() => {
+                  setDashboardSection(tab.id as DashboardSection);
+                }}
+                type="button"
+              >
+                {tab.label}
+              </button>
+            ))}
+            <div className="ml-auto pr-1 text-xs text-slate-600">已保存主机：{hosts.length}</div>
           </div>
 
-          <div className="rounded-2xl border border-[#1f314e] bg-[#04060a] p-4">
+          {saveError && (
+            <p className="rounded-xl border border-rose-200 bg-rose-50/80 px-4 py-3 text-sm text-rose-700">
+              {saveError}
+            </p>
+          )}
+
+          {dashboardSection === 'hosts' && (
+            <div className="rounded-2xl border border-white/65 bg-white/50 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold text-slate-800">主机资产列表</h2>
+                <button
+                  className="rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white"
+                  onClick={() => {
+                    setDashboardSection('wizard');
+                  }}
+                  type="button"
+                >
+                  添加主机
+                </button>
+              </div>
+              <div className="mt-4 space-y-3">
+                {hosts.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-white/70 bg-white/65 px-4 py-3 text-sm text-slate-600">
+                    当前金库中暂无主机，请前往“新增主机”填写连接信息。
+                  </p>
+                )}
+                {hosts.map((host, index) => {
+                  const hostId = buildHostKey(host);
+                  const identity = identities.find((item) => item.id === host.identityId);
+                  return (
+                    <article
+                      className="rounded-xl border border-white/70 bg-white/70 px-4 py-3"
+                      key={`${host.basicInfo.address}-${host.identityId}-${index}`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-[220px] flex-1">
+                          <p className="text-sm font-semibold text-slate-800">
+                            {host.basicInfo.name || `${host.basicInfo.address}:${host.basicInfo.port}`}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-600">
+                            {(identity?.username ?? 'unknown')}@{host.basicInfo.address}:{host.basicInfo.port}
+                          </p>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            身份：{identity?.name ?? '未绑定身份'}
+                          </p>
+                          {host.basicInfo.description.trim() && (
+                            <p className="mt-1 text-[11px] text-slate-500">备注：{host.basicInfo.description}</p>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white"
+                            onClick={() => {
+                              setEditingHostId(hostId);
+                            }}
+                            type="button"
+                          >
+                            编辑
+                          </button>
+                          <button
+                            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                            onClick={() => {
+                              void handleDeleteHost(
+                                hostId,
+                                host.basicInfo.name || `${host.basicInfo.address}:${host.basicInfo.port}`
+                              );
+                            }}
+                            type="button"
+                          >
+                            删除
+                          </button>
+                          <button
+                            className="rounded-lg bg-[#0a3a78] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0d4b98]"
+                            disabled={isConnectingTerminal}
+                            onClick={() => {
+                              setDashboardSection('terminal');
+                              void openTerminal(host);
+                            }}
+                            type="button"
+                          >
+                            {isConnectingTerminal ? '连接中...' : '新建 Tab'}
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {dashboardSection === 'terminal' && (
+            <div className="rounded-2xl border border-[#1f314e] bg-[#04060a] p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold text-[#d7e5ff]">罗屿终端</h2>
               <div className="flex items-center gap-2">
@@ -600,37 +782,39 @@ function App(): JSX.Element {
               syncRequest={sftpSyncRequest}
             />
           </div>
-
-          <StepIndicator currentStep={currentStep} />
-
-          {saveError && (
-            <p className="rounded-xl border border-rose-200 bg-rose-50/80 px-4 py-3 text-sm text-rose-700">
-              {saveError}
-            </p>
           )}
 
-          <div className="rounded-2xl border border-white/65 bg-white/45 p-5 sm:p-6">
-            {currentStep === 1 && <Step1 />}
-            {currentStep === 2 && <Step2 />}
-            {currentStep === 3 && <Step3 />}
-          </div>
+          {dashboardSection === 'wizard' && (
+            <>
+              <StepIndicator currentStep={currentStep} />
 
-          {submittedHost && (
-            <div className="space-y-3 rounded-2xl border border-emerald-200/70 bg-emerald-50/70 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-sm font-semibold text-emerald-900">主机配置已保存（预览）</h2>
-                <button
-                  className="rounded-xl border border-emerald-300 bg-white/70 px-3 py-1.5 text-xs font-medium text-emerald-800"
-                  onClick={reset}
-                  type="button"
-                >
-                  新建另一台主机
-                </button>
+              <div className="rounded-2xl border border-white/65 bg-white/45 p-5 sm:p-6">
+                {currentStep === 1 && <Step1 />}
+                {currentStep === 2 && <Step2 />}
+                {currentStep === 3 && <Step3 />}
               </div>
-              <pre className="overflow-auto rounded-xl bg-slate-900/90 p-3 text-xs leading-6 text-slate-100">
-                {JSON.stringify(submittedHost, null, 2)}
-              </pre>
-            </div>
+
+              {submittedHost && (
+                <div className="space-y-3 rounded-2xl border border-emerald-200/70 bg-emerald-50/70 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-emerald-900">主机配置已保存（预览）</h2>
+                    <button
+                      className="rounded-xl border border-emerald-300 bg-white/70 px-3 py-1.5 text-xs font-medium text-emerald-800"
+                      onClick={() => {
+                        reset();
+                        setDashboardSection('wizard');
+                      }}
+                      type="button"
+                    >
+                      新建另一台主机
+                    </button>
+                  </div>
+                  <pre className="overflow-auto rounded-xl bg-slate-900/90 p-3 text-xs leading-6 text-slate-100">
+                    {JSON.stringify(submittedHost, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </>
           )}
         </div>
       </section>
@@ -675,6 +859,18 @@ function App(): JSX.Element {
           setIsAboutOpen(false);
         }}
         open={isAboutOpen}
+      />
+
+      <HostEditDialog
+        host={editingHost}
+        identity={editingIdentity}
+        isSaving={isSavingVault}
+        linkedHostCount={editingLinkedHostCount}
+        onClose={() => {
+          setEditingHostId(null);
+        }}
+        onSubmit={handleSaveHostEdit}
+        open={Boolean(editingHost)}
       />
 
       <Toaster closeButton expand position="top-right" richColors />
