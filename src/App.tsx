@@ -24,7 +24,7 @@ import { runHealthCheck } from './services/inspector';
 import { sshQueryPwd, sshWrite } from './services/ssh';
 import { exportEncryptedBackup } from './services/vault';
 import { getAppVersion } from './services/appInfo';
-import { checkForUpdate, installAvailableUpdate } from './services/updater';
+import { checkForUpdate, checkRepositoryPulse, installAvailableUpdate } from './services/updater';
 import { resolveThemePreset } from './theme/loyuTheme';
 import { buildHostKey } from './utils/hostKey';
 
@@ -42,6 +42,8 @@ const darkPanelButtonClass =
   'rounded-lg border border-[#5a79a8] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]';
 const SFTP_PANEL_MIN_WIDTH = 280;
 const SFTP_PANEL_MAX_WIDTH = 680;
+const UPDATE_CHECK_INTERVAL_MS = 20 * 60 * 1000;
+const MIN_VISIBLE_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 function App(): JSX.Element {
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState<boolean>(false);
@@ -240,26 +242,93 @@ function App(): JSX.Element {
 
   useEffect(() => {
     let cancelled = false;
+    let lastCheckAt = 0;
+    const releaseDedupKey = 'orbitterm:last-notified-release';
+    const repoDedupKey = 'orbitterm:last-notified-repo-sha';
 
-    void getAppVersion()
-      .then((version) => checkForUpdate(version))
-      .then((result) => {
-        if (cancelled || !result.shouldUpdate) {
+    const readStorage = (key: string): string | null => {
+      try {
+        return window.localStorage.getItem(key);
+      } catch (_error) {
+        return null;
+      }
+    };
+
+    const writeStorage = (key: string, value: string): void => {
+      try {
+        window.localStorage.setItem(key, value);
+      } catch (_error) {
+        // Ignore storage write failures.
+      }
+    };
+
+    const runCheck = async (force: boolean): Promise<void> => {
+      const now = Date.now();
+      if (!force && now - lastCheckAt < UPDATE_CHECK_INTERVAL_MS) {
+        return;
+      }
+      lastCheckAt = now;
+
+      try {
+        const version = await getAppVersion();
+        const updateResult = await checkForUpdate(version);
+        if (cancelled) {
           return;
         }
-        const latestVersion = result.manifest?.version ?? '新版本';
-        const description =
-          result.channel === 'tauri'
-            ? '可在设置中心点击“检查并更新到最新版本”。'
-            : '可在“关于轨连终端”中打开下载页面获取最新版。';
-        toast.info(`发现新版本 ${latestVersion}`, { description });
-      })
-      .catch(() => {
+
+        if (updateResult.shouldUpdate) {
+          const latestVersion = updateResult.manifest?.version ?? '新版本';
+          const releaseKey = `${updateResult.channel}:${latestVersion}`;
+          if (readStorage(releaseDedupKey) !== releaseKey) {
+            const description =
+              updateResult.channel === 'tauri'
+                ? '已发布可安装更新，可在设置中心点击“检查并更新到最新版本”。'
+                : '检测到新 Release，可在设置中心点击更新按钮下载并安装。';
+            toast.info(`发现新版本 ${latestVersion}`, { description });
+            writeStorage(releaseDedupKey, releaseKey);
+          }
+        }
+
+        const repoPulse = await checkRepositoryPulse(version);
+        if (cancelled || !repoPulse.hasNewCommits || updateResult.shouldUpdate) {
+          return;
+        }
+
+        const pulseKey = repoPulse.latestCommitSha ?? `ahead:${repoPulse.aheadBy}`;
+        if (readStorage(repoDedupKey) === pulseKey) {
+          return;
+        }
+
+        toast.message('检测到仓库有新提交', {
+          description: `主分支新增 ${repoPulse.aheadBy} 次提交，发布新安装包后会提示更新。`
+        });
+        writeStorage(repoDedupKey, pulseKey);
+      } catch (_error) {
         // Ignore background update check errors.
-      });
+      }
+    };
+
+    void runCheck(true);
+    const intervalId = window.setInterval(() => {
+      void runCheck(false);
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      if (Date.now() - lastCheckAt < MIN_VISIBLE_RECHECK_INTERVAL_MS) {
+        return;
+      }
+      void runCheck(true);
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 

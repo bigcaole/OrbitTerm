@@ -6,6 +6,14 @@ export interface UpdateCheckResult {
   manifest?: UpdateManifest;
   channel: 'tauri' | 'github';
   downloadUrl?: string;
+  releaseUrl?: string;
+}
+
+export interface RepositoryPulseResult {
+  hasNewCommits: boolean;
+  aheadBy: number;
+  latestCommitSha?: string;
+  compareUrl?: string;
 }
 
 interface GithubReleaseAsset {
@@ -16,10 +24,25 @@ interface GithubReleaseAsset {
 interface GithubReleasePayload {
   tag_name: string;
   html_url: string;
+  published_at?: string;
   assets: GithubReleaseAsset[];
 }
 
-const GITHUB_LATEST_RELEASE_API = 'https://api.github.com/repos/bigcaole/OrbitTerm/releases/latest';
+interface GithubCompareCommit {
+  sha: string;
+}
+
+interface GithubComparePayload {
+  status?: string;
+  ahead_by?: number;
+  html_url?: string;
+  commits?: GithubCompareCommit[];
+}
+
+const GITHUB_REPO = 'bigcaole/OrbitTerm';
+const GITHUB_LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_COMPARE_API = `https://api.github.com/repos/${GITHUB_REPO}/compare`;
+const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
 
 const normalizeVersion = (version: string): string => {
   return version.trim().replace(/^v/i, '').split('-')[0] ?? version.trim();
@@ -97,7 +120,8 @@ const checkGithubReleaseUpdate = async (
       version: latestVersion
     } as UpdateManifest,
     channel: 'github',
-    downloadUrl: hasUpdate ? pickDownloadUrl(payload) : payload.html_url
+    downloadUrl: hasUpdate ? pickDownloadUrl(payload) : payload.html_url,
+    releaseUrl: payload.html_url
   };
 };
 
@@ -129,4 +153,42 @@ export const installAvailableUpdate = async (
   }
 
   await openExternalLink(context.downloadUrl);
+};
+
+export const checkRepositoryPulse = async (currentVersion: string): Promise<RepositoryPulseResult> => {
+  const baseTag = `v${normalizeVersion(currentVersion)}`;
+  const response = await fetch(`${GITHUB_COMPARE_API}/${encodeURIComponent(baseTag)}...main`, {
+    headers: {
+      Accept: 'application/vnd.github+json'
+    }
+  });
+
+  if (response.status === 404) {
+    return {
+      hasNewCommits: false,
+      aheadBy: 0
+    };
+  }
+
+  if (!response.ok) {
+    throw new Error(`仓库更新检测失败（HTTP ${response.status}）`);
+  }
+
+  const payload = (await response.json()) as GithubComparePayload;
+  const aheadBy = Math.max(payload.ahead_by ?? 0, 0);
+  const latestCommitSha =
+    payload.commits && payload.commits.length > 0
+      ? payload.commits[payload.commits.length - 1]?.sha
+      : undefined;
+
+  return {
+    hasNewCommits: aheadBy > 0,
+    aheadBy,
+    latestCommitSha,
+    compareUrl: payload.html_url
+  };
+};
+
+export const openReleasePage = async (): Promise<void> => {
+  await openExternalLink(GITHUB_RELEASES_URL);
 };

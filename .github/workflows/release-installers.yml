@@ -39,9 +39,18 @@ jobs:
 
       - name: Build Tauri bundle
         shell: bash
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         run: |
-          jq '.tauri.updater.active = false' src-tauri/tauri.conf.json > /tmp/tauri.release.conf.json
-          npx tauri build --config /tmp/tauri.release.conf.json
+          if [[ -n "${TAURI_PRIVATE_KEY}" ]]; then
+            echo "Using signed updater build."
+            npx tauri build
+          else
+            echo "No updater signing key configured. Falling back to installer-only build."
+            jq '.tauri.updater.active = false' src-tauri/tauri.conf.json > /tmp/tauri.release.conf.json
+            npx tauri build --config /tmp/tauri.release.conf.json
+          fi
 
       - name: Upload macOS release files
         if: matrix.os == 'macos-latest'
@@ -51,6 +60,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
       - name: Upload Windows release files
@@ -60,7 +70,11 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: |
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.zip
+            src-tauri/target/release/bundle/msi/*.msi.zip.sig
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
           if-no-files-found: error
 
   publish:
@@ -76,6 +90,64 @@ jobs:
       - name: Verify release assets
         run: find release-assets -type f -maxdepth 4
 
+      - name: Generate updater latest.json (if signatures available)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
+          MAC_ARCHIVE="$(find release-assets -type f -name '*.app.tar.gz' | head -n 1 || true)"
+          WINDOWS_ARCHIVE="$(find release-assets -type f -name '*.msi.zip' | head -n 1 || true)"
+          if [[ -z "${WINDOWS_ARCHIVE}" ]]; then
+            WINDOWS_ARCHIVE="$(find release-assets -type f -name '*.nsis.zip' | head -n 1 || true)"
+          fi
+
+          if [[ -z "${MAC_ARCHIVE}" || -z "${WINDOWS_ARCHIVE}" ]]; then
+            echo "Updater archives not found, skip latest.json generation."
+            exit 0
+          fi
+
+          MAC_SIG_FILE="${MAC_ARCHIVE}.sig"
+          WINDOWS_SIG_FILE="${WINDOWS_ARCHIVE}.sig"
+          if [[ ! -f "${MAC_SIG_FILE}" || ! -f "${WINDOWS_SIG_FILE}" ]]; then
+            echo "Updater signatures not found, skip latest.json generation."
+            exit 0
+          fi
+
+          MAC_PLATFORM="darwin-aarch64"
+          if [[ "${MAC_ARCHIVE}" == *"x64"* || "${MAC_ARCHIVE}" == *"x86_64"* ]]; then
+            MAC_PLATFORM="darwin-x86_64"
+          fi
+
+          MAC_NAME="$(basename "${MAC_ARCHIVE}")"
+          WINDOWS_NAME="$(basename "${WINDOWS_ARCHIVE}")"
+          MAC_SIG="$(tr -d '\r\n' < "${MAC_SIG_FILE}")"
+          WINDOWS_SIG="$(tr -d '\r\n' < "${WINDOWS_SIG_FILE}")"
+
+          mkdir -p release-assets/updater
+          cat > release-assets/updater/latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "OrbitTerm ${VERSION} 自动发布更新包。",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "${MAC_PLATFORM}": {
+                "signature": "${MAC_SIG}",
+                "url": "${BASE_URL}/${MAC_NAME}"
+              },
+              "windows-x86_64": {
+                "signature": "${WINDOWS_SIG}",
+                "url": "${BASE_URL}/${WINDOWS_NAME}"
+              }
+            }
+          }
+          JSON
+
+          echo "Generated updater manifest at release-assets/updater/latest.json"
+          cat release-assets/updater/latest.json
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -85,3 +157,6 @@ jobs:
             release-assets/**/*.tar.gz
             release-assets/**/*.msi
             release-assets/**/*.exe
+            release-assets/**/*.zip
+            release-assets/**/*.sig
+            release-assets/updater/latest.json
