@@ -38,6 +38,9 @@ interface SshClosedEvent {
 
 const OUTPUT_FLUSH_CHARS_PER_FRAME = 64 * 1024;
 const OUTPUT_BUFFER_LIMIT_CHARS = 2 * 1024 * 1024;
+const isWindowsPlatform = (): boolean => {
+  return navigator.userAgent.toLowerCase().includes('windows');
+};
 
 export function LoyuTerminal({
   sessionId,
@@ -96,15 +99,19 @@ export function LoyuTerminal({
 
     terminal.loadAddon(fitAddon);
 
-    try {
-      const webglAddon = new WebglAddon();
-      webglAddonRef.current = webglAddon;
-      terminal.loadAddon(webglAddon);
-      webglAddon.onContextLoss(() => {
-        webglAddon.dispose();
-      });
-    } catch (_error) {
-      terminal.writeln('\\x1b[33m[提示] WebGL 加速不可用，已回退到 Canvas 渲染。\\x1b[0m');
+    if (!isWindowsPlatform()) {
+      try {
+        const webglAddon = new WebglAddon();
+        webglAddonRef.current = webglAddon;
+        terminal.loadAddon(webglAddon);
+        webglAddon.onContextLoss(() => {
+          webglAddon.dispose();
+        });
+      } catch (_error) {
+        terminal.writeln('\\x1b[33m[提示] WebGL 加速不可用，已回退到 Canvas 渲染。\\x1b[0m');
+      }
+    } else {
+      terminal.writeln('\\x1b[33m[提示] Windows 默认禁用 WebGL 渲染以提升稳定性。\\x1b[0m');
     }
 
     terminal.open(hostRef.current);
@@ -259,7 +266,7 @@ export function LoyuTerminal({
     });
 
     let rafId = 0;
-    const observer = new ResizeObserver(() => {
+    const handleResize = (): void => {
       if (rafId !== 0) {
         cancelAnimationFrame(rafId);
       }
@@ -267,9 +274,16 @@ export function LoyuTerminal({
         fitAddon.fit();
         pushResize();
       });
-    });
+    };
 
-    observer.observe(hostRef.current);
+    const resizeObserverSupported =
+      typeof window !== 'undefined' && typeof window.ResizeObserver !== 'undefined';
+    const observer = resizeObserverSupported ? new ResizeObserver(handleResize) : null;
+    if (observer) {
+      observer.observe(hostRef.current);
+    } else {
+      window.addEventListener('resize', handleResize);
+    }
 
     return () => {
       disposed = true;
@@ -283,7 +297,11 @@ export function LoyuTerminal({
         flushRafRef.current = 0;
       }
 
-      observer.disconnect();
+      if (observer) {
+        observer.disconnect();
+      } else {
+        window.removeEventListener('resize', handleResize);
+      }
       dataDisposable.dispose();
       for (const unlisten of unlisteners) {
         unlisten();

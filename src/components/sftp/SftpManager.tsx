@@ -327,11 +327,21 @@ export function SftpManager({
     };
 
     syncHeight();
-    const observer = new ResizeObserver(syncHeight);
-    observer.observe(node);
+    const resizeObserverSupported =
+      typeof window !== 'undefined' && typeof window.ResizeObserver !== 'undefined';
+    const observer = resizeObserverSupported ? new ResizeObserver(syncHeight) : null;
+    if (observer) {
+      observer.observe(node);
+    } else {
+      window.addEventListener('resize', syncHeight);
+    }
 
     return () => {
-      observer.disconnect();
+      if (observer) {
+        observer.disconnect();
+      } else {
+        window.removeEventListener('resize', syncHeight);
+      }
     };
   }, [sessionId, loading, sortedEntries.length]);
 
