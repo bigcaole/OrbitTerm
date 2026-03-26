@@ -81,6 +81,7 @@ export function LoyuTerminal({
     flushRafRef.current = 0;
 
     const terminal = new Terminal({
+      allowProposedApi: true,
       convertEol: true,
       cursorBlink: true,
       cursorStyle: 'bar',
