@@ -97,6 +97,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          mkdir -p release-assets/updater
 
           MAC_ARCHIVE="$(find release-assets -type f -name '*.app.tar.gz' | head -n 1 || true)"
           WINDOWS_ARCHIVE="$(find release-assets -type f -name '*.msi.zip' | head -n 1 || true)"
@@ -105,14 +106,30 @@ jobs:
           fi
 
           if [[ -z "${MAC_ARCHIVE}" || -z "${WINDOWS_ARCHIVE}" ]]; then
-            echo "Updater archives not found, skip latest.json generation."
+            cat > release-assets/updater/latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "OrbitTerm ${VERSION} 发布完成（当前发布未启用签名更新包）。",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {}
+          }
+          JSON
+            echo "Updater archives not found, emitted fallback latest.json."
             exit 0
           fi
 
           MAC_SIG_FILE="${MAC_ARCHIVE}.sig"
           WINDOWS_SIG_FILE="${WINDOWS_ARCHIVE}.sig"
           if [[ ! -f "${MAC_SIG_FILE}" || ! -f "${WINDOWS_SIG_FILE}" ]]; then
-            echo "Updater signatures not found, skip latest.json generation."
+            cat > release-assets/updater/latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "OrbitTerm ${VERSION} 发布完成（当前发布缺少签名文件）。",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {}
+          }
+          JSON
+            echo "Updater signatures not found, emitted fallback latest.json."
             exit 0
           fi
 
@@ -126,7 +143,6 @@ jobs:
           MAC_SIG="$(tr -d '\r\n' < "${MAC_SIG_FILE}")"
           WINDOWS_SIG="$(tr -d '\r\n' < "${WINDOWS_SIG_FILE}")"
 
-          mkdir -p release-assets/updater
           cat > release-assets/updater/latest.json <<JSON
           {
             "version": "${VERSION}",
