@@ -5,6 +5,8 @@ interface SettingsDrawerProps {
   open: boolean;
   onClose: () => void;
   onOpenAbout: () => void;
+  onQuickUpdate: () => Promise<void>;
+  isQuickUpdating: boolean;
 }
 
 const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
@@ -29,7 +31,9 @@ const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
 export function SettingsDrawer({
   open,
   onClose,
-  onOpenAbout
+  onOpenAbout,
+  onQuickUpdate,
+  isQuickUpdating
 }: SettingsDrawerProps): JSX.Element | null {
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
@@ -167,6 +171,21 @@ export function SettingsDrawer({
                 App 隐藏或闲置 5 分钟后自动锁定金库（推荐开启）。
               </span>
             </label>
+          </section>
+
+          <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">
+            <h3 className="text-sm font-semibold text-slate-800">更新</h3>
+            <p className="text-xs text-slate-700">检查是否有新版本，并在可用时直接安装更新。</p>
+            <button
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isQuickUpdating}
+              onClick={() => {
+                void onQuickUpdate();
+              }}
+              type="button"
+            >
+              {isQuickUpdating ? '更新处理中...' : '检查并更新到最新版本'}
+            </button>
           </section>
 
           <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">

@@ -92,8 +92,8 @@ export function LoyuInspector({
   };
 
   return (
-    <div className="fixed inset-0 z-[95] flex justify-end bg-[#02050a]/35 backdrop-blur-sm">
-      <aside className="h-full w-full max-w-[520px] overflow-hidden border-l border-[#2a4266] bg-[#071121]/95 text-[#d7e5ff] shadow-2xl shadow-black/60">
+    <div className="fixed inset-0 z-[125] flex items-center justify-center bg-[#02050a]/45 p-4 backdrop-blur-sm">
+      <aside className="h-[min(86vh,860px)] w-full max-w-5xl overflow-hidden rounded-3xl border border-[#2a4266] bg-[#071121]/95 text-[#d7e5ff] shadow-2xl shadow-black/60">
         <div className="flex items-center justify-between border-b border-[#1d314f] px-4 py-3">
           <div>
             <p className="text-sm font-semibold">Loyu Inspector</p>
@@ -210,7 +210,7 @@ export function LoyuInspector({
               <span className="text-[11px] text-[#8ea4c7]">{visibleLogs.length} 条</span>
             </div>
 
-            <div className="max-h-[380px] space-y-2 overflow-auto rounded-lg border border-[#1f3658] bg-[#050d1b] p-2">
+            <div className="max-h-[420px] space-y-2 overflow-auto rounded-lg border border-[#1f3658] bg-[#050d1b] p-2">
               {visibleLogs.length === 0 && (
                 <p className="text-[11px] text-[#8ea4c7]">暂无日志。建立 SSH 连接后会实时显示握手与认证信息。</p>
               )}

@@ -21,6 +21,10 @@
       "shell": {
         "all": false,
         "open": "^https://(github\\.com|loyu\\.app|www\\.loyu\\.app)(/.*)?$"
+      },
+      "process": {
+        "all": false,
+        "relaunch": true
       }
     },
     "updater": {

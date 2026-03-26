@@ -84,7 +84,9 @@ impl SshSessionRegistry {
         let backend = pty_backend_name().to_string();
 
         let mut config = client::Config::default();
-        config.inactivity_timeout = Some(Duration::from_secs(timeout_secs));
+        // inactivity_timeout 代表会话空闲断开阈值，不应复用“连接超时”配置，
+        // 否则会在短时间无输入时频繁断线（例如 10 秒）。
+        config.inactivity_timeout = None;
         if request.host_config.advanced_options.keep_alive_enabled {
             let interval = request
                 .host_config

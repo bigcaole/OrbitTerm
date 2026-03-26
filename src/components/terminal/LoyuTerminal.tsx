@@ -355,7 +355,7 @@ export function LoyuTerminal({
 
   return (
     <div
-      className="h-[460px] w-full rounded-2xl border p-2"
+      className="h-full min-h-[340px] w-full rounded-2xl border p-2"
       ref={hostRef}
       style={{
         borderColor,

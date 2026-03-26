@@ -17,6 +17,7 @@ interface SftpManagerProps {
   sessionId: string | null;
   syncRequest: SftpSyncRequest | null;
   onSendToTerminal: (command: string, execute: boolean) => Promise<void>;
+  className?: string;
 }
 
 interface ContextMenuState {
@@ -148,7 +149,8 @@ const readableTime = (ts: number | null): string => {
 export function SftpManager({
   sessionId,
   syncRequest,
-  onSendToTerminal
+  onSendToTerminal,
+  className
 }: SftpManagerProps): JSX.Element {
   const [currentPath, setCurrentPath] = useState<string>('/');
   const [entries, setEntries] = useState<SftpEntry[]>([]);
@@ -533,7 +535,7 @@ export function SftpManager({
   };
 
   return (
-    <section className="mt-4 rounded-2xl border border-[#2a3f61] bg-[#06101d] p-3">
+    <section className={`flex h-full min-h-0 flex-col rounded-2xl border border-[#2a3f61] bg-[#06101d] p-3 ${className ?? ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8ea5c7]">SFTP Manager</p>
@@ -611,14 +613,14 @@ export function SftpManager({
         </p>
       )}
 
-      <div className="mt-3 overflow-hidden rounded-xl border border-[#263d60]">
+      <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[#263d60]">
         <div className="grid grid-cols-[2.3fr_0.9fr_1.4fr] bg-[#0f1d31] px-3 py-2 text-[11px] font-semibold text-[#9cb1cf]">
           <span>名称</span>
           <span>大小</span>
           <span>修改时间</span>
         </div>
         <div
-          className="max-h-[240px] overflow-auto bg-[#071323]"
+          className="h-full min-h-0 overflow-auto bg-[#071323]"
           onScroll={(event) => {
             if (isVirtualList) {
               setScrollTop(event.currentTarget.scrollTop);
