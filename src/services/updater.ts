@@ -43,6 +43,54 @@ const GITHUB_REPO = 'bigcaole/OrbitTerm';
 const GITHUB_LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 const GITHUB_COMPARE_API = `https://api.github.com/repos/${GITHUB_REPO}/compare`;
 const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
+const TAURI_UPDATE_CHECK_TIMEOUT_MS = 12_000;
+const GITHUB_REQUEST_TIMEOUT_MS = 10_000;
+const TAURI_INSTALL_TIMEOUT_MS = 5 * 60_000;
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> => {
+  let timeoutHandle: number | null = null;
+
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutHandle = window.setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle !== null) {
+      window.clearTimeout(timeoutHandle);
+    }
+  }
+};
+
+const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/vnd.github+json'
+      }
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('更新请求超时，请检查网络后重试。');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutHandle);
+  }
+};
 
 const normalizeVersion = (version: string): string => {
   return version.trim().replace(/^v/i, '').split('-')[0] ?? version.trim();
@@ -101,11 +149,7 @@ const pickDownloadUrl = (payload: GithubReleasePayload): string => {
 const checkGithubReleaseUpdate = async (
   currentVersion: string
 ): Promise<UpdateCheckResult> => {
-  const response = await fetch(GITHUB_LATEST_RELEASE_API, {
-    headers: {
-      Accept: 'application/vnd.github+json'
-    }
-  });
+  const response = await fetchWithTimeout(GITHUB_LATEST_RELEASE_API, GITHUB_REQUEST_TIMEOUT_MS);
   if (!response.ok) {
     throw new Error(`GitHub 更新检测失败（HTTP ${response.status}）`);
   }
@@ -129,7 +173,11 @@ export const checkForUpdate = async (
   currentVersion: string
 ): Promise<UpdateCheckResult> => {
   try {
-    const result = await checkUpdate();
+    const result = await withTimeout(
+      checkUpdate(),
+      TAURI_UPDATE_CHECK_TIMEOUT_MS,
+      '内置更新检测超时，已自动切换到 Release 检测。'
+    );
     return {
       shouldUpdate: result.shouldUpdate,
       manifest: result.manifest,
@@ -144,7 +192,11 @@ export const installAvailableUpdate = async (
   context: UpdateCheckResult
 ): Promise<void> => {
   if (context.channel === 'tauri') {
-    await installUpdate();
+    await withTimeout(
+      installUpdate(),
+      TAURI_INSTALL_TIMEOUT_MS,
+      '更新安装超时，请稍后重试或前往 Release 页面手动安装。'
+    );
     return;
   }
 
@@ -157,11 +209,10 @@ export const installAvailableUpdate = async (
 
 export const checkRepositoryPulse = async (currentVersion: string): Promise<RepositoryPulseResult> => {
   const baseTag = `v${normalizeVersion(currentVersion)}`;
-  const response = await fetch(`${GITHUB_COMPARE_API}/${encodeURIComponent(baseTag)}...main`, {
-    headers: {
-      Accept: 'application/vnd.github+json'
-    }
-  });
+  const response = await fetchWithTimeout(
+    `${GITHUB_COMPARE_API}/${encodeURIComponent(baseTag)}...main`,
+    GITHUB_REQUEST_TIMEOUT_MS
+  );
 
   if (response.status === 404) {
     return {

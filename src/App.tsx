@@ -469,13 +469,34 @@ function App(): JSX.Element {
       return;
     }
 
+    let progressTimer: number | null = null;
+    const stopProgressPulse = (): void => {
+      if (progressTimer !== null) {
+        window.clearInterval(progressTimer);
+        progressTimer = null;
+      }
+    };
+    const startProgressPulse = (maxProgress: number, step = 1, intervalMs = 450): void => {
+      stopProgressPulse();
+      progressTimer = window.setInterval(() => {
+        setQuickUpdateProgress((prev) => {
+          if (prev >= maxProgress) {
+            return prev;
+          }
+          return Math.min(maxProgress, prev + step);
+        });
+      }, intervalMs);
+    };
+
     setIsQuickUpdating(true);
     setQuickUpdateError(null);
     setQuickUpdateProgress(8);
     setQuickUpdateMessage('正在检查更新...');
     try {
+      startProgressPulse(24, 1, 420);
       const version = await getAppVersion();
       const result = await checkForUpdate(version);
+      stopProgressPulse();
       if (!result.shouldUpdate) {
         setQuickUpdateProgress(100);
         setQuickUpdateMessage('当前已是最新版本。');
@@ -489,7 +510,9 @@ function App(): JSX.Element {
       toast.info(`检测到新版本 ${latestVersion}，正在自动更新...`);
       setQuickUpdateProgress(62);
       setQuickUpdateMessage('正在下载更新包...');
+      startProgressPulse(86, 1, 550);
       await installAvailableUpdate(result);
+      stopProgressPulse();
       setQuickUpdateProgress(90);
       setQuickUpdateMessage('正在完成安装...');
 
@@ -508,12 +531,15 @@ function App(): JSX.Element {
         toast.info('当前安装通道不支持静默覆盖，已打开下载页面。');
       }
     } catch (error) {
+      stopProgressPulse();
       const fallback = '更新失败，请稍后重试。';
       const message = error instanceof Error ? error.message : fallback;
       setQuickUpdateError(message || fallback);
       setQuickUpdateMessage('更新失败。');
+      setQuickUpdateProgress(0);
       toast.error(message || fallback);
     } finally {
+      stopProgressPulse();
       setIsQuickUpdating(false);
     }
   };
