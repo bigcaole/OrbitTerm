@@ -1,0 +1,40 @@
+version: '3.9'
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orbitterm-sync-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orbitterm_sync
+      POSTGRES_USER: orbitterm
+      POSTGRES_PASSWORD: change_me_now
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbitterm -d orbitterm_sync"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orbitterm-sync-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "postgres://orbitterm:change_me_now@postgres:5432/orbitterm_sync?sslmode=disable"
+      JWT_SECRET: "replace_with_a_long_random_secret"
+      JWT_EXPIRE_HOURS: "720"
+      ALLOW_INSECURE_HTTP: "false"
+      CORS_ALLOW_ORIGINS: "https://app.orbitterm.example"
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:

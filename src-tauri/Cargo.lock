@@ -3023,10 +3023,11 @@ dependencies = [
 
 [[package]]
 name = "orbitterm-backend"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "aes-gcm",
  "argon2",
+ "base64 0.22.1",
  "hmac",
  "portable-pty",
  "reqwest 0.12.28",

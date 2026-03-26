@@ -15,8 +15,8 @@ use models::{
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HealthCheckResponse,
     SaveVaultRequest, SaveVaultResponse, SftpDownloadRequest, SftpLsRequest, SftpLsResponse,
     SftpMkdirRequest, SftpRenameRequest, SftpRmRequest, SftpTransferResponse, SftpUploadRequest,
-    SshConnectRequest, SshConnectedResponse, SshDisconnectRequest, SshResizeRequest,
-    SshWriteRequest, UnlockAndLoadRequest, UnlockAndLoadResponse,
+    SshConnectRequest, SshConnectedResponse, SshDisconnectRequest, SshResizeRequest, SshWriteRequest,
+    UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
 };
 use ssh::SshSessionRegistry;
 use tauri::{AppHandle, State};
@@ -177,6 +177,27 @@ async fn export_encrypted_backup(
 }
 
 #[tauri::command]
+async fn vault_export_sync_blob(app: AppHandle) -> Result<VaultSyncExportResponse, String> {
+    vault::export_sync_blob(app).await
+}
+
+#[tauri::command]
+async fn vault_import_sync_blob(
+    app: AppHandle,
+    state: State<'_, VaultSessionState>,
+    request: VaultSyncImportRequest,
+) -> Result<UnlockAndLoadResponse, String> {
+    vault::import_sync_blob(app, state, request).await
+}
+
+#[tauri::command]
+async fn vault_clear_session(
+    state: State<'_, VaultSessionState>,
+) -> Result<(), String> {
+    vault::clear_vault_session(state).await
+}
+
+#[tauri::command]
 async fn run_health_check(app: AppHandle) -> Result<HealthCheckResponse, String> {
     Ok(diagnostics::run_health_check(&app).await)
 }
@@ -206,6 +227,9 @@ fn main() {
             unlock_and_load,
             save_vault,
             export_encrypted_backup,
+            vault_export_sync_blob,
+            vault_import_sync_blob,
+            vault_clear_session,
             run_health_check,
             app_version
         ]);

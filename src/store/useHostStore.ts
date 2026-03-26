@@ -8,7 +8,22 @@ import {
   type Step3FormValues
 } from '../schemas/hostSchemas';
 import type { HostConfig, IdentityConfig } from '../types/host';
-import { saveVault, unlockAndLoad } from '../services/vault';
+import {
+  clearVaultSession,
+  exportVaultSyncBlob,
+  importVaultSyncBlob,
+  saveVault,
+  unlockAndLoad
+} from '../services/vault';
+import {
+  clearCloudSyncSession,
+  loginCloudSync,
+  pullCloudSyncBlob,
+  pushCloudSyncBlob,
+  readCloudSyncSession,
+  registerCloudSync,
+  type CloudSyncSession
+} from '../services/cloudSync';
 import { type ProxyJumpHop, sshConnect, sshDisconnect } from '../services/ssh';
 import { buildHostKey } from '../utils/hostKey';
 
@@ -39,10 +54,15 @@ interface HostState {
   appView: AppView;
   hosts: HostConfig[];
   identities: IdentityConfig[];
+  vaultVersion: number | null;
+  vaultUpdatedAt: number | null;
   isUnlocking: boolean;
   unlockError: string | null;
   isSavingVault: boolean;
   saveError: string | null;
+  cloudSyncSession: CloudSyncSession | null;
+  isSyncingCloud: boolean;
+  cloudSyncError: string | null;
   activeSessions: TerminalSession[];
   activeSessionId: string | null;
   isConnectingTerminal: boolean;
@@ -54,6 +74,11 @@ interface HostState {
   submittedHost: HostConfig | null;
   unlockVault: (masterPassword: string) => Promise<void>;
   lockVault: () => Promise<void>;
+  registerCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
+  loginCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
+  logoutCloudAccount: () => void;
+  syncPushToCloud: () => Promise<void>;
+  syncPullFromCloud: () => Promise<void>;
   setHosts: (hosts: HostConfig[]) => void;
   setIdentities: (identities: IdentityConfig[]) => void;
   updateHostAndIdentity: (hostId: string, payload: HostEditPayload) => Promise<void>;
@@ -296,14 +321,21 @@ const createIdentityId = (): string => {
   return `identity-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 };
 
+const initialCloudSyncSession = readCloudSyncSession();
+
 export const useHostStore = create<HostState>((set, get) => ({
   appView: 'locked',
   hosts: [],
   identities: [],
+  vaultVersion: null,
+  vaultUpdatedAt: null,
   isUnlocking: false,
   unlockError: null,
   isSavingVault: false,
   saveError: null,
+  cloudSyncSession: initialCloudSyncSession,
+  isSyncingCloud: false,
+  cloudSyncError: null,
   activeSessions: [],
   activeSessionId: null,
   isConnectingTerminal: false,
@@ -322,24 +354,35 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isUnlocking: true, unlockError: null });
     try {
       const response = await unlockAndLoad(masterPassword);
+      const cloudSession = readCloudSyncSession();
       set({
         hosts: response.hosts,
         identities: response.identities,
+        vaultVersion: response.version,
+        vaultUpdatedAt: response.updatedAt,
         appView: 'dashboard',
         isUnlocking: false,
         unlockError: null,
         activeSessions: [],
         activeSessionId: null,
         terminalError: null,
-        saveError: null
+        saveError: null,
+        cloudSyncSession: cloudSession,
+        cloudSyncError: null
       });
+
+      if (cloudSession) {
+        void get().syncPullFromCloud();
+      }
     } catch (error) {
       const fallback = '解锁失败，请检查主密码后重试。';
       const message = error instanceof Error ? error.message : fallback;
       set({
         isUnlocking: false,
         appView: 'locked',
-        unlockError: message || fallback
+        unlockError: message || fallback,
+        vaultVersion: null,
+        vaultUpdatedAt: null
       });
     }
   },
@@ -353,11 +396,18 @@ export const useHostStore = create<HostState>((set, get) => ({
         // Ignore disconnect failures while forcing vault lock.
       }
     }
+    try {
+      await clearVaultSession();
+    } catch (_error) {
+      // Ignore session clear failures and continue locking UI.
+    }
 
     set({
       appView: 'locked',
       hosts: [],
       identities: [],
+      vaultVersion: null,
+      vaultUpdatedAt: null,
       activeSessions: [],
       activeSessionId: null,
       terminalError: null,
@@ -369,6 +419,138 @@ export const useHostStore = create<HostState>((set, get) => ({
       isSavingVault: false,
       saveError: null
     });
+  },
+  registerCloudAccount: async (apiBaseUrl, email, password) => {
+    set({ isSyncingCloud: true, cloudSyncError: null });
+    try {
+      const session = await registerCloudSync(apiBaseUrl, email, password);
+      set({
+        cloudSyncSession: session,
+        isSyncingCloud: false,
+        cloudSyncError: null
+      });
+      if (get().appView === 'dashboard') {
+        await get().syncPullFromCloud();
+      }
+      toast.success('私有云账号注册成功');
+    } catch (error) {
+      const fallback = '注册同步账号失败，请稍后重试。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSyncingCloud: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
+  },
+  loginCloudAccount: async (apiBaseUrl, email, password) => {
+    set({ isSyncingCloud: true, cloudSyncError: null });
+    try {
+      const session = await loginCloudSync(apiBaseUrl, email, password);
+      set({
+        cloudSyncSession: session,
+        isSyncingCloud: false,
+        cloudSyncError: null
+      });
+      if (get().appView === 'dashboard') {
+        await get().syncPullFromCloud();
+      }
+      toast.success('私有云同步已连接');
+    } catch (error) {
+      const fallback = '同步登录失败，请检查账号或密码。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSyncingCloud: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
+  },
+  logoutCloudAccount: () => {
+    clearCloudSyncSession();
+    set({
+      cloudSyncSession: null,
+      cloudSyncError: null
+    });
+  },
+  syncPushToCloud: async () => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      return;
+    }
+
+    set({ isSyncingCloud: true, cloudSyncError: null });
+    try {
+      const localBlob = await exportVaultSyncBlob();
+      await pushCloudSyncBlob(session, {
+        version: localBlob.version,
+        encryptedBlobBase64: localBlob.encryptedBlobBase64
+      });
+      set({
+        cloudSyncSession: session,
+        vaultVersion: localBlob.version,
+        vaultUpdatedAt: localBlob.updatedAt,
+        isSyncingCloud: false,
+        cloudSyncError: null
+      });
+    } catch (error) {
+      const fallback = '自动上传云端失败。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSyncingCloud: false,
+        cloudSyncError: message || fallback
+      });
+    }
+  },
+  syncPullFromCloud: async () => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      return;
+    }
+
+    set({ isSyncingCloud: true, cloudSyncError: null });
+    try {
+      const remote = await pullCloudSyncBlob(session);
+      if (!remote.hasData || !remote.encryptedBlobBase64 || typeof remote.version !== 'number') {
+        set({
+          cloudSyncSession: session,
+          isSyncingCloud: false,
+          cloudSyncError: null
+        });
+        return;
+      }
+
+      const localVersion = get().vaultVersion ?? 0;
+      if (remote.version <= localVersion) {
+        set({
+          cloudSyncSession: session,
+          isSyncingCloud: false,
+          cloudSyncError: null
+        });
+        return;
+      }
+
+      const imported = await importVaultSyncBlob(remote.encryptedBlobBase64);
+      set({
+        cloudSyncSession: session,
+        hosts: imported.hosts,
+        identities: imported.identities,
+        vaultVersion: imported.version,
+        vaultUpdatedAt: imported.updatedAt,
+        isSyncingCloud: false,
+        cloudSyncError: null
+      });
+      toast.success(`已从私有云同步到 v${imported.version}`);
+    } catch (error) {
+      const fallback = '自动拉取云端失败。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSyncingCloud: false,
+        cloudSyncError: message || fallback
+      });
+    }
   },
   setHosts: (hosts) => set({ hosts }),
   setIdentities: (identities) => set({ identities }),
@@ -442,11 +624,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
 
     try {
-      await saveVault(nextHosts, nextIdentities);
+      const saveResult = await saveVault(nextHosts, nextIdentities);
       set({
         isSavingVault: false,
-        saveError: null
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
       });
+      void get().syncPushToCloud();
       toast.success('主机信息已更新', {
         description: '更改已写入本地加密金库。'
       });
@@ -500,11 +685,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
 
     try {
-      await saveVault(nextHosts, nextIdentities);
+      const saveResult = await saveVault(nextHosts, nextIdentities);
       set({
         isSavingVault: false,
-        saveError: null
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
       });
+      void get().syncPushToCloud();
       toast.success(`已删除主机：${targetHost.basicInfo.name}`);
     } catch (error) {
       const fallback = '主机已从当前界面移除，但写入本地金库失败。';
@@ -523,8 +711,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     );
     set({ identities: nextIdentities, isSavingVault: true, saveError: null });
     try {
-      await saveVault(state.hosts, nextIdentities);
-      set({ isSavingVault: false, saveError: null });
+      const saveResult = await saveVault(state.hosts, nextIdentities);
+      set({
+        isSavingVault: false,
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
+      });
+      void get().syncPushToCloud();
     } catch (error) {
       const fallback = '身份更新已应用到当前会话，但写入本地金库失败。';
       const message = error instanceof Error ? error.message : fallback;
@@ -747,11 +941,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
 
     try {
-      await saveVault(nextHosts, nextIdentities);
+      const saveResult = await saveVault(nextHosts, nextIdentities);
       set({
         isSavingVault: false,
-        saveError: null
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
       });
+      void get().syncPushToCloud();
       toast.success('主机配置已保存到金库', {
         description: '本地加密文件已更新。'
       });

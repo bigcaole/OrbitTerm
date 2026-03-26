@@ -13,6 +13,12 @@ export interface SaveVaultResponse {
   updatedAt: number;
 }
 
+export interface VaultSyncExportResponse {
+  encryptedBlobBase64: string;
+  version: number;
+  updatedAt: number;
+}
+
 export interface ExportEncryptedBackupResponse {
   path: string;
   bytes: number;
@@ -48,4 +54,22 @@ export const exportEncryptedBackup = async (
       destinationPath
     }
   });
+};
+
+export const exportVaultSyncBlob = async (): Promise<VaultSyncExportResponse> => {
+  return tauriInvoke<VaultSyncExportResponse>('vault_export_sync_blob');
+};
+
+export const importVaultSyncBlob = async (
+  encryptedBlobBase64: string
+): Promise<UnlockAndLoadResponse> => {
+  return tauriInvoke<UnlockAndLoadResponse>('vault_import_sync_blob', {
+    request: {
+      encryptedBlobBase64
+    }
+  });
+};
+
+export const clearVaultSession = async (): Promise<void> => {
+  await tauriInvoke<void>('vault_clear_session');
 };

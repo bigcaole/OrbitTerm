@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { LOYU_THEME_PRESETS } from '../../theme/loyuTheme';
+import { useHostStore } from '../../store/useHostStore';
 import { useUiSettingsStore } from '../../store/useUiSettingsStore';
 
 interface SettingsDrawerProps {
@@ -57,6 +60,25 @@ export function SettingsDrawer({
   const setThemePresetId = useUiSettingsStore((state) => state.setThemePresetId);
   const setAutoLockEnabled = useUiSettingsStore((state) => state.setAutoLockEnabled);
   const setAutoLockMinutes = useUiSettingsStore((state) => state.setAutoLockMinutes);
+  const cloudSyncSession = useHostStore((state) => state.cloudSyncSession);
+  const isSyncingCloud = useHostStore((state) => state.isSyncingCloud);
+  const cloudSyncError = useHostStore((state) => state.cloudSyncError);
+  const registerCloudAccount = useHostStore((state) => state.registerCloudAccount);
+  const loginCloudAccount = useHostStore((state) => state.loginCloudAccount);
+  const logoutCloudAccount = useHostStore((state) => state.logoutCloudAccount);
+  const syncPullFromCloud = useHostStore((state) => state.syncPullFromCloud);
+  const vaultVersion = useHostStore((state) => state.vaultVersion);
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>(cloudSyncSession?.apiBaseUrl ?? '');
+  const [email, setEmail] = useState<string>(cloudSyncSession?.email ?? '');
+  const [password, setPassword] = useState<string>('');
+
+  useEffect(() => {
+    if (!cloudSyncSession) {
+      return;
+    }
+    setApiBaseUrl(cloudSyncSession.apiBaseUrl);
+    setEmail(cloudSyncSession.email);
+  }, [cloudSyncSession]);
 
   if (!open) {
     return null;
@@ -198,6 +220,132 @@ export function SettingsDrawer({
                 value={autoLockMinutes}
               />
             </div>
+          </section>
+
+          <section className="space-y-3 rounded-xl border border-white/60 bg-white/60 p-3">
+            <h3 className="text-sm font-semibold text-slate-800">私有云同步</h3>
+            <p className="text-xs text-slate-700">
+              使用账号登录后，主机金库会在本地变更后自动上传，并在登录时自动拉取云端新版本（仅支持 HTTPS）。
+            </p>
+            <label className="block text-xs text-slate-600" htmlFor="sync-api-url">
+              同步服务地址（HTTPS）
+            </label>
+            <input
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+              id="sync-api-url"
+              onChange={(event) => setApiBaseUrl(event.target.value)}
+              placeholder="https://sync.orbitterm.example"
+              type="url"
+              value={apiBaseUrl}
+            />
+
+            <label className="block text-xs text-slate-600" htmlFor="sync-email">
+              邮箱账号
+            </label>
+            <input
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+              id="sync-email"
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="user@example.com"
+              type="email"
+              value={email}
+            />
+
+            <label className="block text-xs text-slate-600" htmlFor="sync-password">
+              账号密码
+            </label>
+            <input
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+              id="sync-password"
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="至少 8 位"
+              type="password"
+              value={password}
+            />
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSyncingCloud}
+                onClick={() => {
+                  void registerCloudAccount(apiBaseUrl, email, password)
+                    .catch((error) => {
+                      const fallback = '注册失败，请检查输入后重试。';
+                      const message = error instanceof Error ? error.message : fallback;
+                      toast.error(message || fallback);
+                    })
+                    .finally(() => {
+                      setPassword('');
+                    });
+                }}
+                type="button"
+              >
+                {isSyncingCloud ? '处理中...' : '注册账号'}
+              </button>
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSyncingCloud}
+                onClick={() => {
+                  void loginCloudAccount(apiBaseUrl, email, password)
+                    .catch((error) => {
+                      const fallback = '登录失败，请检查输入后重试。';
+                      const message = error instanceof Error ? error.message : fallback;
+                      toast.error(message || fallback);
+                    })
+                    .finally(() => {
+                      setPassword('');
+                    });
+                }}
+                type="button"
+              >
+                {isSyncingCloud ? '处理中...' : '登录并同步'}
+              </button>
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSyncingCloud || !cloudSyncSession}
+                onClick={() => {
+                  void syncPullFromCloud()
+                    .then(() => {
+                      toast.success('已执行云端拉取检查');
+                    })
+                    .catch((error) => {
+                      const fallback = '云端拉取失败，请稍后重试。';
+                      const message = error instanceof Error ? error.message : fallback;
+                      toast.error(message || fallback);
+                    });
+                }}
+                type="button"
+              >
+                立即拉取
+              </button>
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSyncingCloud || !cloudSyncSession}
+                onClick={() => {
+                  logoutCloudAccount();
+                  setPassword('');
+                  toast.message('已断开私有云同步账号');
+                }}
+                type="button"
+              >
+                退出登录
+              </button>
+            </div>
+
+            {cloudSyncSession ? (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                已登录：{cloudSyncSession.email}（本地金库版本：v{vaultVersion ?? '-'}）
+              </p>
+            ) : (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                当前未登录私有云账号，数据仅保存在本机加密金库。
+              </p>
+            )}
+            {cloudSyncError ? (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {cloudSyncError}
+              </p>
+            ) : null}
           </section>
 
           <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">

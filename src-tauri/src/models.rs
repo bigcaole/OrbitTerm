@@ -201,6 +201,20 @@ pub struct SaveVaultResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VaultSyncImportRequest {
+    pub encrypted_blob_base64: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultSyncExportResponse {
+    pub encrypted_blob_base64: String,
+    pub version: u64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportEncryptedBackupRequest {
     pub destination_path: String,
 }

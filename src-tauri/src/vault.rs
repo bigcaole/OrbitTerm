@@ -2,6 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use serde::Deserialize;
 use serde_json::json;
 use tauri::{AppHandle, State};
@@ -18,7 +19,7 @@ use crate::e2ee::{
 use crate::models::{
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HostAdvancedOptions,
     HostAuthConfig, HostConfig, IdentityConfig, SaveVaultRequest, SaveVaultResponse,
-    UnlockAndLoadRequest, UnlockAndLoadResponse,
+    UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
 };
 
 const VAULT_FILENAME: &str = "vault.bin";
@@ -26,6 +27,7 @@ const LEGACY_VAULT_FILENAME: &str = "cloud-vault.enc.json";
 
 #[derive(Default)]
 pub struct VaultSessionState {
+    pub master_password: RwLock<Option<Zeroizing<String>>>,
     pub derived_key: RwLock<Option<Zeroizing<[u8; DERIVED_KEY_LEN]>>>,
     pub salt: RwLock<Option<[u8; 16]>>,
     pub version: RwLock<Option<u64>>,
@@ -54,6 +56,8 @@ enum VaultError {
     VaultLocked,
     #[error("未找到可导出的加密金库")]
     BackupSourceMissing,
+    #[error("同步数据格式无效")]
+    InvalidSyncBlob,
 }
 
 impl VaultError {
@@ -71,6 +75,7 @@ impl VaultError {
             Self::BackupSourceMissing => {
                 "未找到可导出的本地加密金库，请先完成一次解锁或保存。".to_string()
             }
+            Self::InvalidSyncBlob => "云端同步数据格式无效，请检查同步服务返回内容。".to_string(),
         }
     }
 }
@@ -119,6 +124,46 @@ pub async fn export_encrypted_backup(
     result.map_err(|err| err.user_message())
 }
 
+pub async fn export_sync_blob(
+    app: AppHandle,
+) -> Result<VaultSyncExportResponse, String> {
+    let result = export_sync_blob_inner(&app).await;
+    result.map_err(|err| err.user_message())
+}
+
+pub async fn import_sync_blob(
+    app: AppHandle,
+    state: State<'_, VaultSessionState>,
+    request: VaultSyncImportRequest,
+) -> Result<UnlockAndLoadResponse, String> {
+    let result = import_sync_blob_inner(&app, &state, request).await;
+    result.map_err(|err| err.user_message())
+}
+
+pub async fn clear_vault_session(state: State<'_, VaultSessionState>) -> Result<(), String> {
+    {
+        let mut guard = state.master_password.write().await;
+        *guard = None;
+    }
+    {
+        let mut guard = state.derived_key.write().await;
+        *guard = None;
+    }
+    {
+        let mut guard = state.salt.write().await;
+        *guard = None;
+    }
+    {
+        let mut guard = state.version.write().await;
+        *guard = None;
+    }
+    {
+        let mut guard = state.updated_at.write().await;
+        *guard = None;
+    }
+    Ok(())
+}
+
 async fn unlock_and_load_inner(
     app: &AppHandle,
     state: &State<'_, VaultSessionState>,
@@ -139,6 +184,10 @@ async fn unlock_and_load_inner(
     }
     salt.copy_from_slice(&encrypted.salt);
 
+    {
+        let mut password_guard = state.master_password.write().await;
+        *password_guard = Some(Zeroizing::new(master_password.to_string()));
+    }
     {
         let mut key_guard = state.derived_key.write().await;
         *key_guard = Some(derived_key);
@@ -255,6 +304,88 @@ async fn export_encrypted_backup_inner(
     Ok(ExportEncryptedBackupResponse {
         path: destination.to_string(),
         bytes: encrypted_bytes.len() as u64,
+    })
+}
+
+async fn export_sync_blob_inner(app: &AppHandle) -> Result<VaultSyncExportResponse, VaultError> {
+    let source_path = resolve_vault_path(app, VAULT_FILENAME).await?;
+    let exists = fs::try_exists(&source_path)
+        .await
+        .map_err(|_| VaultError::ReadFailed)?;
+    if !exists {
+        return Err(VaultError::BackupSourceMissing);
+    }
+
+    let encrypted_bytes = fs::read(&source_path)
+        .await
+        .map_err(|_| VaultError::ReadFailed)?;
+    let encrypted = serde_json::from_slice::<EncryptedVault>(&encrypted_bytes)
+        .map_err(|_| VaultError::Corrupted)?;
+
+    Ok(VaultSyncExportResponse {
+        encrypted_blob_base64: base64::engine::general_purpose::STANDARD.encode(&encrypted_bytes),
+        version: encrypted.version,
+        updated_at: encrypted.updated_at,
+    })
+}
+
+async fn import_sync_blob_inner(
+    app: &AppHandle,
+    state: &State<'_, VaultSessionState>,
+    request: VaultSyncImportRequest,
+) -> Result<UnlockAndLoadResponse, VaultError> {
+    let encoded_blob = request.encrypted_blob_base64.trim();
+    if encoded_blob.is_empty() {
+        return Err(VaultError::InvalidSyncBlob);
+    }
+
+    let master_password = {
+        let guard = state.master_password.read().await;
+        let password = guard.as_ref().ok_or(VaultError::VaultLocked)?;
+        password.to_string()
+    };
+
+    let encrypted_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded_blob)
+        .map_err(|_| VaultError::InvalidSyncBlob)?;
+    let encrypted = serde_json::from_slice::<EncryptedVault>(&encrypted_bytes)
+        .map_err(|_| VaultError::InvalidSyncBlob)?;
+
+    let decrypted = decrypt_cloud_vault(master_password.as_str(), &encrypted)?;
+    let derived_key = derive_session_key(master_password.as_str(), &encrypted)?;
+    let (hosts, identities) = parse_hosts_and_identities(&decrypted)?;
+
+    let mut salt = [0_u8; 16];
+    if encrypted.salt.len() != salt.len() {
+        return Err(VaultError::Corrupted);
+    }
+    salt.copy_from_slice(&encrypted.salt);
+
+    let vault_path = resolve_vault_path(app, VAULT_FILENAME).await?;
+    atomic_write(&vault_path, &encrypted_bytes).await?;
+
+    {
+        let mut key_guard = state.derived_key.write().await;
+        *key_guard = Some(derived_key);
+    }
+    {
+        let mut salt_guard = state.salt.write().await;
+        *salt_guard = Some(salt);
+    }
+    {
+        let mut version_guard = state.version.write().await;
+        *version_guard = Some(decrypted.version);
+    }
+    {
+        let mut updated_at_guard = state.updated_at.write().await;
+        *updated_at_guard = Some(decrypted.updated_at);
+    }
+
+    Ok(UnlockAndLoadResponse {
+        hosts,
+        identities,
+        version: decrypted.version,
+        updated_at: decrypted.updated_at,
     })
 }
 
