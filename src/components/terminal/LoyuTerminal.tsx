@@ -95,9 +95,12 @@ export function LoyuTerminal({
       convertEol: true,
       cursorBlink: true,
       cursorStyle: 'bar',
+      drawBoldTextInBrightColors: true,
       fontFamily,
       fontSize,
-      lineHeight: 1.2,
+      fontWeight: '400',
+      fontWeightBold: '600',
+      lineHeight: 1.24,
       theme
     });
     terminalRef.current = terminal;

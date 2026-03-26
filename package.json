@@ -1,7 +1,7 @@
 {
   "name": "orbitterm-app",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,10 @@
     "generate:icons": "python3 scripts/generate_tauri_icons.py"
   },
   "dependencies": {
+    "@fontsource/fira-code": "^5.2.7",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/inconsolata": "^5.2.8",
+    "@fontsource/source-code-pro": "^5.2.7",
     "@hookform/resolvers": "^3.10.0",
     "@tauri-apps/api": "^1.6.0",
     "react": "^18.3.1",

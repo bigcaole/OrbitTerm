@@ -14,20 +14,32 @@ interface SettingsDrawerProps {
 
 const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
   {
-    label: 'Sarasa Mono SC (默认)',
-    value: 'Sarasa Mono SC, JetBrains Mono, Menlo, Monaco, monospace'
+    label: 'IBM Plex Mono (推荐)',
+    value: 'IBM Plex Mono, Source Code Pro, Inconsolata, Sarasa Mono SC, Menlo, Monaco, monospace'
   },
   {
-    label: 'JetBrains Mono',
-    value: 'JetBrains Mono, Sarasa Mono SC, Menlo, Monaco, monospace'
-  },
-  {
-    label: 'SF Mono',
-    value: 'SFMono-Regular, SF Mono, Menlo, Monaco, monospace'
+    label: 'Source Code Pro',
+    value: 'Source Code Pro, IBM Plex Mono, Inconsolata, Sarasa Mono SC, Menlo, Monaco, monospace'
   },
   {
     label: 'Fira Code',
-    value: 'Fira Code, JetBrains Mono, Menlo, Monaco, monospace'
+    value: 'Fira Code, IBM Plex Mono, Source Code Pro, Inconsolata, Menlo, Monaco, monospace'
+  },
+  {
+    label: 'Inconsolata',
+    value: 'Inconsolata, IBM Plex Mono, Source Code Pro, Fira Code, Menlo, Monaco, monospace'
+  },
+  {
+    label: 'JetBrains Mono',
+    value: 'JetBrains Mono, IBM Plex Mono, Source Code Pro, Inconsolata, Menlo, Monaco, monospace'
+  },
+  {
+    label: 'Sarasa Mono SC',
+    value: 'Sarasa Mono SC, IBM Plex Mono, Source Code Pro, Inconsolata, Menlo, Monaco, monospace'
+  },
+  {
+    label: 'SF Mono',
+    value: 'SFMono-Regular, SF Mono, IBM Plex Mono, Source Code Pro, Inconsolata, Menlo, Monaco, monospace'
   }
 ];
 
@@ -98,6 +110,9 @@ export function SettingsDrawer({
                 </option>
               ))}
             </select>
+            <p className="text-[11px] text-slate-500">
+              已内置多款开源等宽字体，长时间查看日志时建议优先使用 IBM Plex Mono 或 Source Code Pro。
+            </p>
 
             <div className="flex items-center justify-between text-xs text-slate-600">
               <span>字体大小</span>

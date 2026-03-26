@@ -29,7 +29,8 @@ export const useUiSettingsStore = create<UiSettingsState>()(
   persist(
     (set) => ({
       terminalFontSize: 14,
-      terminalFontFamily: 'Sarasa Mono SC, JetBrains Mono, Menlo, Monaco, monospace',
+      terminalFontFamily:
+        'IBM Plex Mono, Source Code Pro, Inconsolata, Sarasa Mono SC, Menlo, Monaco, monospace',
       terminalOpacity: 92,
       terminalBlur: 10,
       themePresetId: 'abyss',
