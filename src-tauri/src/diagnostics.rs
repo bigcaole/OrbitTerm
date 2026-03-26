@@ -1,9 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(windows)]
-use std::process::Command;
-
 use tauri::AppHandle;
+#[cfg(windows)]
+use tauri::webview_version;
 use tokio::fs;
 use tokio::net::lookup_host;
 
@@ -96,7 +95,7 @@ async fn check_app_data_writable(app: &AppHandle) -> HealthCheckItem {
 
 #[cfg(windows)]
 async fn check_webview_runtime() -> HealthCheckItem {
-    let result = tokio::task::spawn_blocking(query_webview2_version).await;
+    let result = tokio::task::spawn_blocking(webview_version).await;
     match result {
         Ok(Ok(version)) => HealthCheckItem {
             id: "webview2".to_string(),
@@ -123,40 +122,6 @@ async fn check_webview_runtime() -> HealthCheckItem {
             suggestion: Some("请手动确认 WebView2 Runtime 是否安装。".to_string()),
         },
     }
-}
-
-#[cfg(windows)]
-fn query_webview2_version() -> Result<String, String> {
-    const WEBVIEW2_KEY: &str =
-        "HKLM\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-    const WEBVIEW2_USER_KEY: &str =
-        "HKCU\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-
-    for key in [WEBVIEW2_KEY, WEBVIEW2_USER_KEY] {
-        let output = Command::new("reg")
-            .args(["query", key, "/v", "pv"])
-            .output()
-            .map_err(|err| err.to_string())?;
-
-        if !output.status.success() {
-            continue;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        for line in stdout.lines() {
-            if !line.contains("pv") {
-                continue;
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(version) = parts.last() {
-                if !version.trim().is_empty() {
-                    return Ok((*version).to_string());
-                }
-            }
-        }
-    }
-
-    Err("注册表中未找到 WebView2 版本字段".to_string())
 }
 
 #[cfg(target_os = "macos")]
