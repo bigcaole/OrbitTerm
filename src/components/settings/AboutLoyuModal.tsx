@@ -11,8 +11,8 @@ interface AboutLoyuModalProps {
   onClose: () => void;
 }
 
-const GITHUB_URL = 'https://github.com/bigcaole/Loyu-Terminal';
-const WEBSITE_URL = 'https://loyu.app';
+const GITHUB_URL = 'https://github.com/bigcaole/OrbitTerm';
+const WEBSITE_URL = 'https://orbitterm.app';
 
 export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Element | null {
   const [version, setVersion] = useState<string>('0.1.2');
@@ -111,13 +111,6 @@ export function AboutLoyuModal({ open, onClose }: AboutLoyuModalProps): JSX.Elem
       setUpdateHint('安装更新失败，请稍后重试。');
     }
   };
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    void handleCheckUpdate();
-  }, [open, version]);
 
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm">

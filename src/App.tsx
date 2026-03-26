@@ -37,7 +37,11 @@ interface SftpSyncRequest {
 }
 
 const toolbarButtonClass =
-  'rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55';
+  'rounded-lg border border-slate-300 bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55';
+const darkPanelButtonClass =
+  'rounded-lg border border-[#5a79a8] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]';
+const SFTP_PANEL_MIN_WIDTH = 280;
+const SFTP_PANEL_MAX_WIDTH = 680;
 
 function App(): JSX.Element {
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState<boolean>(false);
@@ -49,10 +53,15 @@ function App(): JSX.Element {
   const [isNewTabModalOpen, setIsNewTabModalOpen] = useState<boolean>(false);
   const [selectedTabHostId, setSelectedTabHostId] = useState<string>('');
   const [isQuickUpdating, setIsQuickUpdating] = useState<boolean>(false);
+  const [quickUpdateMessage, setQuickUpdateMessage] = useState<string | null>(null);
+  const [quickUpdateProgress, setQuickUpdateProgress] = useState<number>(0);
+  const [quickUpdateError, setQuickUpdateError] = useState<string | null>(null);
   const [editingHostId, setEditingHostId] = useState<string | null>(null);
   const [isSyncingPath, setIsSyncingPath] = useState<boolean>(false);
   const [sftpSyncRequest, setSftpSyncRequest] = useState<SftpSyncRequest | null>(null);
   const [isSftpCollapsed, setIsSftpCollapsed] = useState<boolean>(false);
+  const [sftpPanelWidth, setSftpPanelWidth] = useState<number>(380);
+  const [isResizingSplit, setIsResizingSplit] = useState<boolean>(false);
   const [reconnectMessage, setReconnectMessage] = useState<string | null>(null);
   const [sshDiagnosticLogs, setSshDiagnosticLogs] = useState<SshDiagnosticLogEvent[]>([]);
   const [healthReport, setHealthReport] = useState<HealthCheckResponse | null>(null);
@@ -85,6 +94,7 @@ function App(): JSX.Element {
   const terminalBlur = useUiSettingsStore((state) => state.terminalBlur);
   const themePresetId = useUiSettingsStore((state) => state.themePresetId);
   const autoLockEnabled = useUiSettingsStore((state) => state.autoLockEnabled);
+  const autoLockMinutes = useUiSettingsStore((state) => state.autoLockMinutes);
   const hasCompletedOnboarding = useUiSettingsStore((state) => state.hasCompletedOnboarding);
 
   const activeThemePreset = useMemo(() => resolveThemePreset(themePresetId), [themePresetId]);
@@ -117,6 +127,7 @@ function App(): JSX.Element {
     return hosts.find((host) => buildHostKey(host) === selectedTabHostId) ?? null;
   }, [hosts, selectedTabHostId]);
   const previousSessionCountRef = useRef<number>(activeSessions.length);
+  const terminalSplitRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const prevHtmlOverflow = document.documentElement.style.overflow;
@@ -281,11 +292,41 @@ function App(): JSX.Element {
   }, [activeSessions.length]);
 
   useEffect(() => {
+    if (!isResizingSplit) {
+      return;
+    }
+
+    const onPointerMove = (event: PointerEvent): void => {
+      const container = terminalSplitRef.current;
+      if (!container) {
+        return;
+      }
+      const rect = container.getBoundingClientRect();
+      const available = rect.right - event.clientX;
+      const maxWidth = Math.min(SFTP_PANEL_MAX_WIDTH, Math.max(SFTP_PANEL_MIN_WIDTH, rect.width - 320));
+      const nextWidth = Math.min(maxWidth, Math.max(SFTP_PANEL_MIN_WIDTH, available));
+      setSftpPanelWidth(Math.round(nextWidth));
+    };
+
+    const onPointerUp = (): void => {
+      setIsResizingSplit(false);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, [isResizingSplit]);
+
+  useEffect(() => {
     if (appView !== 'dashboard' || !autoLockEnabled) {
       return;
     }
 
-    const lockAfterMs = 5 * 60 * 1000;
+    const lockAfterMs = autoLockMinutes * 60 * 1000;
     let hiddenTimer: number | null = null;
     let didLock = false;
     let lastActivityAt = Date.now();
@@ -312,7 +353,7 @@ function App(): JSX.Element {
           window.clearTimeout(hiddenTimer);
         }
         hiddenTimer = window.setTimeout(() => {
-          triggerAutoLock('应用已隐藏超过 5 分钟。');
+          triggerAutoLock(`应用已隐藏超过 ${autoLockMinutes} 分钟。`);
         }, lockAfterMs);
       } else {
         if (hiddenTimer !== null) {
@@ -325,7 +366,7 @@ function App(): JSX.Element {
 
     const idleCheckTimer = window.setInterval(() => {
       if (Date.now() - lastActivityAt >= lockAfterMs) {
-        triggerAutoLock('检测到闲置超过 5 分钟。');
+        triggerAutoLock(`检测到闲置超过 ${autoLockMinutes} 分钟。`);
       }
     }, 15000);
 
@@ -352,7 +393,7 @@ function App(): JSX.Element {
       }
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [appView, autoLockEnabled, lockVault]);
+  }, [appView, autoLockEnabled, autoLockMinutes, lockVault]);
 
   const handleQuickUpdate = async (): Promise<void> => {
     if (isQuickUpdating) {
@@ -360,19 +401,32 @@ function App(): JSX.Element {
     }
 
     setIsQuickUpdating(true);
+    setQuickUpdateError(null);
+    setQuickUpdateProgress(8);
+    setQuickUpdateMessage('正在检查更新...');
     try {
       const version = await getAppVersion();
       const result = await checkForUpdate(version);
       if (!result.shouldUpdate) {
+        setQuickUpdateProgress(100);
+        setQuickUpdateMessage('当前已是最新版本。');
         toast.success('当前已是最新版本');
         return;
       }
 
       const latestVersion = result.manifest?.version ?? '新版本';
+      setQuickUpdateProgress(28);
+      setQuickUpdateMessage(`发现新版本 ${latestVersion}，准备下载安装...`);
       toast.info(`检测到新版本 ${latestVersion}，正在自动更新...`);
+      setQuickUpdateProgress(62);
+      setQuickUpdateMessage('正在下载更新包...');
       await installAvailableUpdate(result);
+      setQuickUpdateProgress(90);
+      setQuickUpdateMessage('正在完成安装...');
 
       if (result.channel === 'tauri') {
+        setQuickUpdateProgress(100);
+        setQuickUpdateMessage('更新安装完成，正在重启应用...');
         toast.success('更新安装完成，正在重启应用...');
         try {
           await relaunch();
@@ -380,11 +434,15 @@ function App(): JSX.Element {
           toast.info('请手动重启应用以完成更新。');
         }
       } else {
+        setQuickUpdateProgress(100);
+        setQuickUpdateMessage('已打开下载页面，请下载并安装新版本。');
         toast.info('当前安装通道不支持静默覆盖，已打开下载页面。');
       }
     } catch (error) {
       const fallback = '更新失败，请稍后重试。';
       const message = error instanceof Error ? error.message : fallback;
+      setQuickUpdateError(message || fallback);
+      setQuickUpdateMessage('更新失败。');
       toast.error(message || fallback);
     } finally {
       setIsQuickUpdating(false);
@@ -662,7 +720,7 @@ function App(): JSX.Element {
               新增主机
             </button>
             <button
-              className="rounded-lg border border-[#c3d6f8] bg-[#e9f1ff] px-3 py-1.5 text-xs font-medium text-[#204e8f] hover:bg-[#dbe9ff]"
+              className="rounded-lg border border-[#8eadde] bg-[#e9f1ff] px-3 py-1.5 text-xs font-medium text-[#204e8f] hover:bg-[#dbe9ff]"
               onClick={() => {
                 setIsNewTabModalOpen(true);
               }}
@@ -678,7 +736,7 @@ function App(): JSX.Element {
               连接日志
             </button>
             <button
-              className="ml-auto rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+              className="ml-auto rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
               onClick={() => {
                 void lockVault();
               }}
@@ -748,7 +806,7 @@ function App(): JSX.Element {
                             编辑
                           </button>
                           <button
-                            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                            className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
                             onClick={() => {
                               void handleDeleteHost(
                                 hostId,
@@ -760,7 +818,7 @@ function App(): JSX.Element {
                             删除
                           </button>
                           <button
-                            className="rounded-lg bg-[#0a3a78] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0d4b98] disabled:cursor-not-allowed disabled:opacity-60"
+                            className="rounded-lg border border-[#4f78af] bg-[#0a3a78] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0d4b98] disabled:cursor-not-allowed disabled:opacity-60"
                             disabled={isConnectingTerminal}
                             onClick={() => {
                               void handleConnectFromHostList(hostId);
@@ -779,13 +837,16 @@ function App(): JSX.Element {
           )}
 
           {dashboardSection === 'terminal' && (
-            <section className="relative flex h-full min-h-0 gap-3 overflow-hidden rounded-2xl border border-[#1f314e] bg-[#04060a] p-3">
+            <section
+              className="relative flex h-full min-h-0 gap-3 overflow-hidden rounded-2xl border border-[#1f314e] bg-[#04060a] p-3"
+              ref={terminalSplitRef}
+            >
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-[#1a2c47] bg-[#050a12] p-3">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-sm font-semibold text-[#d7e5ff]">轨连终端</h2>
                   <div className="flex items-center gap-2">
                     <button
-                      className="rounded-lg border border-[#39537a] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]"
+                      className={darkPanelButtonClass}
                       onClick={() => {
                         setIsNewTabModalOpen(true);
                       }}
@@ -794,7 +855,7 @@ function App(): JSX.Element {
                       新建标签
                     </button>
                     <button
-                      className="rounded-lg border border-[#39537a] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]"
+                      className={darkPanelButtonClass}
                       onClick={() => {
                         setIsInspectorOpen(true);
                       }}
@@ -804,7 +865,7 @@ function App(): JSX.Element {
                     </button>
                     {activeSessionId && (
                       <button
-                        className="rounded-lg border border-[#39537a] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a] disabled:cursor-not-allowed disabled:opacity-55"
+                        className={`${darkPanelButtonClass} disabled:cursor-not-allowed disabled:opacity-55`}
                         disabled={isSyncingPath}
                         onClick={() => {
                           void handleSyncPathToSftp();
@@ -816,7 +877,7 @@ function App(): JSX.Element {
                     )}
                     {activeSessionId && (
                       <button
-                        className="rounded-lg border border-[#39537a] bg-[#0f1726] px-3 py-1.5 text-xs font-medium text-[#d7e5ff] hover:bg-[#13203a]"
+                        className={darkPanelButtonClass}
                         onClick={() => {
                           void closeTerminal();
                         }}
@@ -827,7 +888,7 @@ function App(): JSX.Element {
                     )}
                     {activeSessions.length > 1 && (
                       <button
-                        className="rounded-lg border border-amber-300 bg-amber-200/90 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                        className="rounded-lg border border-amber-500 bg-amber-200/90 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
                         onClick={() => {
                           setIsSftpCollapsed((prev) => !prev);
                         }}
@@ -843,7 +904,7 @@ function App(): JSX.Element {
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <p className="text-xs text-rose-400">{terminalError}</p>
                     <button
-                      className="rounded border border-rose-300/50 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-200 hover:bg-rose-500/20"
+                      className="rounded border border-rose-300 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-200 hover:bg-rose-500/20"
                       onClick={() => {
                         setIsInspectorOpen(true);
                       }}
@@ -938,25 +999,27 @@ function App(): JSX.Element {
               </div>
 
               {!isSftpCollapsed && (
-                <div className="h-full w-[380px] shrink-0 overflow-hidden">
-                  <SftpManager
-                    className="h-full"
-                    onSendToTerminal={sendCommandToTerminal}
-                    sessionId={activeSessionId}
-                    syncRequest={sftpSyncRequest}
+                <>
+                  <div
+                    aria-label="调整终端与 SFTP 分栏宽度"
+                    className={`relative h-full w-2 shrink-0 rounded bg-[#223756] transition hover:bg-[#355a89] ${
+                      isResizingSplit ? 'cursor-col-resize bg-[#4e78ab]' : 'cursor-col-resize'
+                    }`}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      setIsResizingSplit(true);
+                    }}
+                    role="separator"
                   />
-                </div>
-              )}
-              {activeSessions.length > 1 && isSftpCollapsed && (
-                <button
-                  className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-xl border border-amber-300 bg-amber-200 px-3 py-2 text-xs font-semibold text-amber-900 shadow-lg hover:bg-amber-100"
-                  onClick={() => {
-                    setIsSftpCollapsed(false);
-                  }}
-                  type="button"
-                >
-                  展开 SFTP
-                </button>
+                  <div className="h-full shrink-0 overflow-hidden" style={{ width: `${sftpPanelWidth}px` }}>
+                    <SftpManager
+                      className="h-full"
+                      onSendToTerminal={sendCommandToTerminal}
+                      sessionId={activeSessionId}
+                      syncRequest={sftpSyncRequest}
+                    />
+                  </div>
+                </>
               )}
             </section>
           )}
@@ -1145,6 +1208,9 @@ function App(): JSX.Element {
 
       <SettingsDrawer
         isQuickUpdating={isQuickUpdating}
+        quickUpdateError={quickUpdateError}
+        quickUpdateMessage={quickUpdateMessage}
+        quickUpdateProgress={quickUpdateProgress}
         onClose={() => {
           setIsSettingsOpen(false);
         }}

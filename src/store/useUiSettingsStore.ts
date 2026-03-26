@@ -9,6 +9,7 @@ interface UiSettingsState {
   terminalBlur: number;
   themePresetId: LoyuThemePresetId;
   autoLockEnabled: boolean;
+  autoLockMinutes: number;
   hasCompletedOnboarding: boolean;
   setTerminalFontSize: (value: number) => void;
   setTerminalFontFamily: (value: string) => void;
@@ -16,6 +17,7 @@ interface UiSettingsState {
   setTerminalBlur: (value: number) => void;
   setThemePresetId: (value: LoyuThemePresetId) => void;
   setAutoLockEnabled: (value: boolean) => void;
+  setAutoLockMinutes: (value: number) => void;
   setHasCompletedOnboarding: (value: boolean) => void;
 }
 
@@ -32,6 +34,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       terminalBlur: 10,
       themePresetId: 'abyss',
       autoLockEnabled: true,
+      autoLockMinutes: 5,
       hasCompletedOnboarding: false,
       setTerminalFontSize: (value) => {
         set({ terminalFontSize: clamp(Math.round(value), 11, 22) });
@@ -55,6 +58,9 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       setAutoLockEnabled: (value) => {
         set({ autoLockEnabled: value });
       },
+      setAutoLockMinutes: (value) => {
+        set({ autoLockMinutes: clamp(Math.round(value), 1, 120) });
+      },
       setHasCompletedOnboarding: (value) => {
         set({ hasCompletedOnboarding: value });
       }
@@ -69,6 +75,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
         terminalBlur: state.terminalBlur,
         themePresetId: state.themePresetId,
         autoLockEnabled: state.autoLockEnabled,
+        autoLockMinutes: state.autoLockMinutes,
         hasCompletedOnboarding: state.hasCompletedOnboarding
       })
     }

@@ -7,6 +7,9 @@ interface SettingsDrawerProps {
   onOpenAbout: () => void;
   onQuickUpdate: () => Promise<void>;
   isQuickUpdating: boolean;
+  quickUpdateMessage: string | null;
+  quickUpdateProgress: number;
+  quickUpdateError: string | null;
 }
 
 const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
@@ -33,7 +36,10 @@ export function SettingsDrawer({
   onClose,
   onOpenAbout,
   onQuickUpdate,
-  isQuickUpdating
+  isQuickUpdating,
+  quickUpdateMessage,
+  quickUpdateProgress,
+  quickUpdateError
 }: SettingsDrawerProps): JSX.Element | null {
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
@@ -41,12 +47,14 @@ export function SettingsDrawer({
   const terminalBlur = useUiSettingsStore((state) => state.terminalBlur);
   const themePresetId = useUiSettingsStore((state) => state.themePresetId);
   const autoLockEnabled = useUiSettingsStore((state) => state.autoLockEnabled);
+  const autoLockMinutes = useUiSettingsStore((state) => state.autoLockMinutes);
   const setTerminalFontSize = useUiSettingsStore((state) => state.setTerminalFontSize);
   const setTerminalFontFamily = useUiSettingsStore((state) => state.setTerminalFontFamily);
   const setTerminalOpacity = useUiSettingsStore((state) => state.setTerminalOpacity);
   const setTerminalBlur = useUiSettingsStore((state) => state.setTerminalBlur);
   const setThemePresetId = useUiSettingsStore((state) => state.setThemePresetId);
   const setAutoLockEnabled = useUiSettingsStore((state) => state.setAutoLockEnabled);
+  const setAutoLockMinutes = useUiSettingsStore((state) => state.setAutoLockMinutes);
 
   if (!open) {
     return null;
@@ -167,10 +175,24 @@ export function SettingsDrawer({
                 onChange={(event) => setAutoLockEnabled(event.target.checked)}
                 type="checkbox"
               />
-              <span className="text-xs text-slate-700">
-                App 隐藏或闲置 5 分钟后自动锁定金库（推荐开启）。
-              </span>
+              <span className="text-xs text-slate-700">App 隐藏或闲置后自动锁定金库（推荐开启）。</span>
             </label>
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between text-xs text-slate-600">
+                <span>自动锁定时长</span>
+                <span>{autoLockMinutes} 分钟</span>
+              </div>
+              <input
+                className="w-full accent-[#2f6df4]"
+                disabled={!autoLockEnabled}
+                max={120}
+                min={1}
+                onChange={(event) => setAutoLockMinutes(Number(event.target.value))}
+                step={1}
+                type="range"
+                value={autoLockMinutes}
+              />
+            </div>
           </section>
 
           <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">
@@ -186,6 +208,20 @@ export function SettingsDrawer({
             >
               {isQuickUpdating ? '更新处理中...' : '检查并更新到最新版本'}
             </button>
+            {quickUpdateMessage && <p className="text-xs text-slate-700">{quickUpdateMessage}</p>}
+            {(isQuickUpdating || quickUpdateProgress > 0) && (
+              <div className="h-1.5 rounded bg-slate-200">
+                <div
+                  className="h-1.5 rounded bg-[#2f6df4] transition-all duration-300"
+                  style={{ width: `${quickUpdateProgress}%` }}
+                />
+              </div>
+            )}
+            {quickUpdateError && (
+              <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
+                {quickUpdateError}
+              </p>
+            )}
           </section>
 
           <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">

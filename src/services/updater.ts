@@ -19,7 +19,7 @@ interface GithubReleasePayload {
   assets: GithubReleaseAsset[];
 }
 
-const GITHUB_LATEST_RELEASE_API = 'https://api.github.com/repos/bigcaole/Loyu-Terminal/releases/latest';
+const GITHUB_LATEST_RELEASE_API = 'https://api.github.com/repos/bigcaole/OrbitTerm/releases/latest';
 
 const normalizeVersion = (version: string): string => {
   return version.trim().replace(/^v/i, '').split('-')[0] ?? version.trim();
