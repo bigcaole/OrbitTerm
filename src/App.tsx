@@ -514,6 +514,67 @@ function App(): JSX.Element {
               </button>
             </div>
           </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/70 bg-white/55 p-2">
+            <button
+              className="rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white"
+              onClick={() => setDashboardSection('hosts')}
+              type="button"
+            >
+              资产管理
+            </button>
+            <button
+              className="rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white"
+              onClick={() => setDashboardSection('terminal')}
+              type="button"
+            >
+              终端会话
+            </button>
+            <button
+              className="rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white"
+              onClick={() => setDashboardSection('wizard')}
+              type="button"
+            >
+              新增主机
+            </button>
+            <button
+              className="rounded-lg border border-[#c3d6f8] bg-[#e9f1ff] px-3 py-1.5 text-xs font-medium text-[#204e8f] hover:bg-[#dbe9ff]"
+              onClick={() => {
+                setDashboardSection('terminal');
+                void openNewTab();
+              }}
+              type="button"
+            >
+              新建标签
+            </button>
+            {activeSessionId && (
+              <button
+                className="rounded-lg border border-[#c3d6f8] bg-[#e9f1ff] px-3 py-1.5 text-xs font-medium text-[#204e8f] hover:bg-[#dbe9ff]"
+                onClick={() => {
+                  void handleSyncPathToSftp();
+                }}
+                type="button"
+              >
+                同步路径
+              </button>
+            )}
+            <button
+              className="rounded-lg border border-white/80 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-white"
+              onClick={() => setIsInspectorOpen(true)}
+              type="button"
+            >
+              连接日志
+            </button>
+            <button
+              className="ml-auto rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+              onClick={() => {
+                void lockVault();
+              }}
+              type="button"
+            >
+              立即锁定
+            </button>
+          </div>
         </div>
 
         <div className="space-y-6 px-6 py-6 sm:px-8">

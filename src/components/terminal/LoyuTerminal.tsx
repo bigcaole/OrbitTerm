@@ -112,7 +112,7 @@ export function LoyuTerminal({
         terminal.writeln('\\x1b[33m[提示] WebGL 加速不可用，已回退到 Canvas 渲染。\\x1b[0m');
       }
     } else {
-      terminal.writeln('\\x1b[33m[提示] Windows 默认禁用 WebGL 渲染以提升稳定性。\\x1b[0m');
+      terminal.writeln('[提示] Windows 默认禁用 WebGL 渲染以提升稳定性。');
     }
 
     terminal.open(hostRef.current);

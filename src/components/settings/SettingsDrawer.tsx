@@ -56,8 +56,8 @@ export function SettingsDrawer({
         onClick={onClose}
         type="button"
       />
-      <aside className="h-full w-full max-w-md border-l border-white/30 bg-[#f2f7ff]/90 p-5 shadow-2xl backdrop-blur-2xl">
-        <div className="flex items-center justify-between">
+      <aside className="h-full w-full max-w-md overflow-y-auto border-l border-white/30 bg-[#f2f7ff]/90 p-5 shadow-2xl backdrop-blur-2xl">
+        <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-5 flex items-center justify-between border-b border-white/60 bg-[#f2f7ff]/95 px-5 py-4 backdrop-blur-2xl">
           <h2 className="text-base font-semibold text-slate-900">设置中心</h2>
           <button
             className="rounded-md px-2 py-1 text-xs text-slate-600 hover:bg-white/70"

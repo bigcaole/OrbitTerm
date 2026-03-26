@@ -1,11 +1,8 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use portable_pty::{native_pty_system, PtySize};
 use russh::client;
 use russh::keys::{decode_openssh, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, Disconnect};
@@ -152,23 +149,6 @@ impl SshSessionRegistry {
             .await
             .map_err(|err| map_russh_error(&err))?;
 
-        let (pty_resize_tx, pty_write_tx, mut pty_read_rx) = build_pty_bridge(cols, rows)?;
-
-        let app_for_output = app.clone();
-        let output_session_id = session_id.clone();
-        tokio::spawn(async move {
-            while let Some(chunk) = pty_read_rx.recv().await {
-                let data = String::from_utf8_lossy(&chunk).to_string();
-                let payload = SshOutputEvent {
-                    session_id: output_session_id.clone(),
-                    data,
-                };
-                if app_for_output.emit_all("ssh-output", payload).is_err() {
-                    break;
-                }
-            }
-        });
-
         let (command_tx, mut command_rx) = mpsc::channel::<SessionCommand>(512);
 
         {
@@ -220,16 +200,6 @@ impl SshSessionRegistry {
                                     );
                                     break;
                                 }
-
-                                if pty_resize_tx.send((cols, rows)).is_err() {
-                                    has_error = true;
-                                    emit_error(
-                                        &app_for_loop,
-                                        Some(loop_session_id.clone()),
-                                        SshBackendError::Pty("本地 PTY 调整大小通道已关闭".to_string()),
-                                    );
-                                    break;
-                                }
                             }
                             Some(SessionCommand::Disconnect) | None => {
                                 break;
@@ -239,12 +209,20 @@ impl SshSessionRegistry {
                     msg = channel.wait() => {
                         match msg {
                             Some(ChannelMsg::Data { data }) => {
-                                if pty_write_tx.send(data.to_vec()).await.is_err() {
+                                let payload = SshOutputEvent {
+                                    session_id: loop_session_id.clone(),
+                                    data: String::from_utf8_lossy(&data).to_string(),
+                                };
+                                if app_for_loop.emit_all("ssh-output", payload).is_err() {
                                     break;
                                 }
                             }
                             Some(ChannelMsg::ExtendedData { data, .. }) => {
-                                if pty_write_tx.send(data.to_vec()).await.is_err() {
+                                let payload = SshOutputEvent {
+                                    session_id: loop_session_id.clone(),
+                                    data: String::from_utf8_lossy(&data).to_string(),
+                                };
+                                if app_for_loop.emit_all("ssh-output", payload).is_err() {
                                     break;
                                 }
                             }
@@ -1041,87 +1019,6 @@ async fn remove_remote_path_recursive(sftp: &SftpSession, path: String) -> SshRe
     }
 
     Ok(())
-}
-
-fn build_pty_bridge(
-    cols: u16,
-    rows: u16,
-) -> SshResult<(
-    std_mpsc::Sender<(u16, u16)>,
-    mpsc::Sender<Vec<u8>>,
-    mpsc::UnboundedReceiver<Vec<u8>>,
-)> {
-    let pty_system = native_pty_system();
-
-    let pty_pair = pty_system
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|err| SshBackendError::Pty(err.to_string()))?;
-
-    let pty_master = pty_pair.master;
-
-    let pty_reader = pty_master
-        .try_clone_reader()
-        .map_err(|err| SshBackendError::Pty(err.to_string()))?;
-
-    let pty_writer = pty_master
-        .take_writer()
-        .map_err(|err| SshBackendError::Pty(err.to_string()))?;
-
-    let (to_pty_tx, mut to_pty_rx) = mpsc::channel::<Vec<u8>>(1024);
-    let (from_pty_tx, from_pty_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (resize_tx, resize_rx) = std_mpsc::channel::<(u16, u16)>();
-
-    tokio::task::spawn_blocking(move || {
-        let mut writer = pty_writer;
-        while let Some(chunk) = to_pty_rx.blocking_recv() {
-            if writer.write_all(&chunk).is_err() {
-                break;
-            }
-            if writer.flush().is_err() {
-                break;
-            }
-        }
-    });
-
-    tokio::task::spawn_blocking(move || {
-        let mut reader = pty_reader;
-        let mut buf = vec![0_u8; 16 * 1024];
-
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if from_pty_tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(err) => {
-                    if err.kind() == std::io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-    });
-
-    tokio::task::spawn_blocking(move || {
-        while let Ok((cols, rows)) = resize_rx.recv() {
-            let _ = pty_master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
-        }
-    });
-
-    Ok((resize_tx, to_pty_tx, from_pty_rx))
 }
 
 fn format_algorithm_list<T: core::fmt::Debug>(items: &[T], max_count: usize) -> String {
