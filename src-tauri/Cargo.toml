@@ -1,6 +1,6 @@
 [package]
 name = "loyu-terminal-backend"
-version = "0.1.0"
+version = "0.1.1"
 description = "Loyu Terminal Tauri backend with async SSH"
 authors = ["Loyu Team"]
 license = "MIT"

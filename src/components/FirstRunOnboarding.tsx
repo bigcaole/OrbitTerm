@@ -98,9 +98,10 @@ export function FirstRunOnboarding(): JSX.Element {
     }
 
     await unlockVault(masterPassword);
-    const appView = useHostStore.getState().appView;
+    const state = useHostStore.getState();
+    const appView = state.appView;
     if (appView !== 'dashboard') {
-      setLocalError('主密码设置失败，请检查后重试。');
+      setLocalError(state.unlockError ?? '主密码设置失败，请检查后重试。');
       return;
     }
 
