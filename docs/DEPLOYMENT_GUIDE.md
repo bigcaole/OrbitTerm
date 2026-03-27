@@ -94,6 +94,10 @@ cd OrbitTerm/cloud-sync-backend
 
 建议基于项目内 `docker-compose.yml` 修改。关键是改掉默认密码、密钥和域名来源。
 
+如果你不想在服务器本地编译，也可以直接使用预构建镜像：
+
+- `ghcr.io/bigcaole/orbitterm-sync-backend:latest`
+
 下面是生产可用示例（可保存为 `docker-compose.prod.yml`）：
 
 ```yaml
@@ -140,6 +144,13 @@ services:
 
 volumes:
   postgres_data:
+```
+
+如果使用预构建镜像，把 `api` 的 `build` 段替换为：
+
+```yaml
+api:
+  image: ghcr.io/bigcaole/orbitterm-sync-backend:latest
 ```
 
 ### 4.3 启动服务
@@ -263,4 +274,3 @@ docker exec -t orbitterm-sync-postgres \
 ```
 
 4. 升级前先备份，再滚动升级。
-

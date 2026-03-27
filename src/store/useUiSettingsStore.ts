@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
 import type { OrbitThemePresetId } from '../theme/orbitTheme';
 
 interface UiSettingsState {
@@ -31,6 +31,57 @@ interface UiSettingsState {
 
 const clamp = (value: number, min: number, max: number): number => {
   return Math.min(max, Math.max(min, value));
+};
+
+const fallbackStorage = new Map<string, string>();
+
+const safeStateStorage: StateStorage = {
+  getItem: (name) => {
+    try {
+      return window.localStorage.getItem(name);
+    } catch (_error) {
+      return fallbackStorage.get(name) ?? null;
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      window.localStorage.setItem(name, value);
+    } catch (_error) {
+      fallbackStorage.set(name, value);
+    }
+  },
+  removeItem: (name) => {
+    try {
+      window.localStorage.removeItem(name);
+    } catch (_error) {
+      fallbackStorage.delete(name);
+    }
+  }
+};
+
+const normalizeHostUsageStats = (value: unknown): Record<string, { count: number; lastConnectedAt: number }> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const source = value as Record<string, unknown>;
+  const next: Record<string, { count: number; lastConnectedAt: number }> = {};
+  for (const [key, rawItem] of Object.entries(source)) {
+    if (!key.trim() || !rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+      continue;
+    }
+    const item = rawItem as Record<string, unknown>;
+    const rawCount = typeof item.count === 'number' ? item.count : Number(item.count);
+    const rawLastConnectedAt =
+      typeof item.lastConnectedAt === 'number' ? item.lastConnectedAt : Number(item.lastConnectedAt);
+    if (!Number.isFinite(rawCount) || !Number.isFinite(rawLastConnectedAt)) {
+      continue;
+    }
+    next[key] = {
+      count: Math.max(0, Math.round(rawCount)),
+      lastConnectedAt: Math.max(0, Math.round(rawLastConnectedAt))
+    };
+  }
+  return next;
 };
 
 export const useUiSettingsStore = create<UiSettingsState>()(
@@ -108,7 +159,60 @@ export const useUiSettingsStore = create<UiSettingsState>()(
     }),
     {
       name: 'orbitterm-ui-settings-v1',
-      storage: createJSONStorage(() => window.localStorage),
+      storage: createJSONStorage(() => safeStateStorage),
+      merge: (persistedState, currentState) => {
+        const persisted = (persistedState ?? {}) as Partial<UiSettingsState>;
+        const nextThemePreset =
+          typeof persisted.themePresetId === 'string'
+            ? (persisted.themePresetId as OrbitThemePresetId)
+            : currentState.themePresetId;
+
+        return {
+          ...currentState,
+          terminalFontSize:
+            typeof persisted.terminalFontSize === 'number'
+              ? clamp(Math.round(persisted.terminalFontSize), 11, 22)
+              : currentState.terminalFontSize,
+          terminalFontFamily:
+            typeof persisted.terminalFontFamily === 'string' && persisted.terminalFontFamily.trim()
+              ? persisted.terminalFontFamily
+              : currentState.terminalFontFamily,
+          terminalOpacity:
+            typeof persisted.terminalOpacity === 'number'
+              ? clamp(Math.round(persisted.terminalOpacity), 50, 100)
+              : currentState.terminalOpacity,
+          terminalBlur:
+            typeof persisted.terminalBlur === 'number'
+              ? clamp(Math.round(persisted.terminalBlur), 0, 28)
+              : currentState.terminalBlur,
+          acrylicBlur:
+            typeof persisted.acrylicBlur === 'number'
+              ? clamp(Math.round(persisted.acrylicBlur), 0, 48)
+              : currentState.acrylicBlur,
+          acrylicSaturation:
+            typeof persisted.acrylicSaturation === 'number'
+              ? clamp(Math.round(persisted.acrylicSaturation), 60, 220)
+              : currentState.acrylicSaturation,
+          acrylicBrightness:
+            typeof persisted.acrylicBrightness === 'number'
+              ? clamp(Math.round(persisted.acrylicBrightness), 70, 150)
+              : currentState.acrylicBrightness,
+          themePresetId: nextThemePreset,
+          autoLockEnabled:
+            typeof persisted.autoLockEnabled === 'boolean'
+              ? persisted.autoLockEnabled
+              : currentState.autoLockEnabled,
+          autoLockMinutes:
+            typeof persisted.autoLockMinutes === 'number'
+              ? clamp(Math.round(persisted.autoLockMinutes), 1, 120)
+              : currentState.autoLockMinutes,
+          hasCompletedOnboarding:
+            typeof persisted.hasCompletedOnboarding === 'boolean'
+              ? persisted.hasCompletedOnboarding
+              : currentState.hasCompletedOnboarding,
+          hostUsageStats: normalizeHostUsageStats(persisted.hostUsageStats)
+        };
+      },
       partialize: (state) => ({
         terminalFontSize: state.terminalFontSize,
         terminalFontFamily: state.terminalFontFamily,

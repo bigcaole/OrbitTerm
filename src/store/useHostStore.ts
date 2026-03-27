@@ -175,6 +175,238 @@ const parseTags = (tagsText: string): string[] => {
   );
 };
 
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+};
+
+const asString = (value: unknown, fallback = ''): string => {
+  return typeof value === 'string' ? value : fallback;
+};
+
+const asBoolean = (value: unknown, fallback: boolean): boolean => {
+  return typeof value === 'boolean' ? value : fallback;
+};
+
+const asInteger = (value: unknown, fallback: number, min: number, max: number): number => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  const normalized = Math.round(parsed);
+  if (normalized < min || normalized > max) {
+    return fallback;
+  }
+  return normalized;
+};
+
+const createFallbackId = (prefix: string): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+};
+
+const normalizeAuthConfig = (value: unknown): Step2FormValues => {
+  const auth = asRecord(value);
+  const method = auth?.method === 'privateKey' ? 'privateKey' : 'password';
+  return {
+    method,
+    password: asString(auth?.password),
+    privateKey: asString(auth?.privateKey),
+    passphrase: asString(auth?.passphrase)
+  };
+};
+
+const normalizeIdentities = (
+  raw: unknown
+): { identities: IdentityConfig[]; discarded: number } => {
+  if (!Array.isArray(raw)) {
+    return { identities: [], discarded: 0 };
+  }
+
+  const identities: IdentityConfig[] = [];
+  let discarded = 0;
+
+  for (const item of raw) {
+    const identity = asRecord(item);
+    if (!identity) {
+      discarded += 1;
+      continue;
+    }
+    const id = asString(identity.id).trim();
+    const username = asString(identity.username).trim();
+    if (!id || !username) {
+      discarded += 1;
+      continue;
+    }
+    const name = asString(identity.name).trim() || `${username}@identity`;
+    identities.push({
+      id,
+      name,
+      username,
+      authConfig: normalizeAuthConfig(identity.authConfig)
+    });
+  }
+
+  return { identities, discarded };
+};
+
+const normalizeHosts = (
+  raw: unknown
+): { hosts: HostConfig[]; discarded: number } => {
+  if (!Array.isArray(raw)) {
+    return { hosts: [], discarded: 0 };
+  }
+
+  const hosts: HostConfig[] = [];
+  let discarded = 0;
+
+  for (const item of raw) {
+    const host = asRecord(item);
+    const basicInfo = asRecord(host?.basicInfo);
+    const advancedOptions = asRecord(host?.advancedOptions);
+    if (!host || !basicInfo || !advancedOptions) {
+      discarded += 1;
+      continue;
+    }
+
+    const address = asString(basicInfo.address).trim();
+    const identityId = asString(host.identityId).trim();
+    if (!address || !identityId) {
+      discarded += 1;
+      continue;
+    }
+
+    const port = asInteger(basicInfo.port, 22, 1, 65535);
+    const normalizedName = asString(basicInfo.name).trim() || `${address}:${port}`;
+    const rawTags = Array.isArray(advancedOptions.tags) ? advancedOptions.tags : [];
+    const tags = Array.from(
+      new Set(
+        rawTags
+          .filter((tag): tag is string => typeof tag === 'string')
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 20);
+
+    hosts.push({
+      basicInfo: {
+        name: normalizedName,
+        address,
+        port,
+        description: asString(basicInfo.description)
+      },
+      identityId,
+      advancedOptions: {
+        jumpHost: asString(advancedOptions.jumpHost),
+        proxyJumpHostId: asString(advancedOptions.proxyJumpHostId),
+        connectionTimeout: asInteger(advancedOptions.connectionTimeout, 10, 1, 120),
+        keepAliveEnabled: asBoolean(advancedOptions.keepAliveEnabled, true),
+        keepAliveInterval: asInteger(advancedOptions.keepAliveInterval, 30, 5, 600),
+        compression: asBoolean(advancedOptions.compression, true),
+        strictHostKeyChecking: asBoolean(advancedOptions.strictHostKeyChecking, true),
+        tags
+      }
+    });
+  }
+
+  return { hosts, discarded };
+};
+
+const normalizeSnippets = (
+  raw: unknown
+): { snippets: Snippet[]; discarded: number } => {
+  if (!Array.isArray(raw)) {
+    return { snippets: [], discarded: 0 };
+  }
+
+  const snippets: Snippet[] = [];
+  let discarded = 0;
+
+  for (const item of raw) {
+    const snippet = asRecord(item);
+    if (!snippet) {
+      discarded += 1;
+      continue;
+    }
+
+    const command = asString(snippet.command).trim();
+    if (!command) {
+      discarded += 1;
+      continue;
+    }
+
+    const title = asString(snippet.title).trim() || `片段-${snippets.length + 1}`;
+    const id = asString(snippet.id).trim() || createFallbackId('snippet');
+    const rawTags = Array.isArray(snippet.tags) ? snippet.tags : [];
+    const tags = Array.from(
+      new Set(
+        rawTags
+          .filter((tag): tag is string => typeof tag === 'string')
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 20);
+
+    snippets.push({
+      id,
+      title,
+      command,
+      tags
+    });
+  }
+
+  return { snippets, discarded };
+};
+
+const normalizeVaultSnapshot = (payload: {
+  hosts: unknown;
+  identities: unknown;
+  snippets: unknown;
+}): {
+  hosts: HostConfig[];
+  identities: IdentityConfig[];
+  snippets: Snippet[];
+  discarded: number;
+} => {
+  const normalizedIdentities = normalizeIdentities(payload.identities);
+  const normalizedHosts = normalizeHosts(payload.hosts);
+  const normalizedSnippets = normalizeSnippets(payload.snippets);
+
+  const identities = [...normalizedIdentities.identities];
+  const identitySet = new Set(identities.map((identity) => identity.id));
+  for (const host of normalizedHosts.hosts) {
+    if (identitySet.has(host.identityId)) {
+      continue;
+    }
+    identitySet.add(host.identityId);
+    identities.push({
+      id: host.identityId,
+      name: `恢复身份-${host.identityId.slice(0, 6) || 'default'}`,
+      username: 'root',
+      authConfig: {
+        method: 'password',
+        password: '',
+        privateKey: '',
+        passphrase: ''
+      }
+    });
+  }
+
+  return {
+    hosts: normalizedHosts.hosts,
+    identities,
+    snippets: normalizedSnippets.snippets,
+    discarded:
+      normalizedIdentities.discarded +
+      normalizedHosts.discarded +
+      normalizedSnippets.discarded
+  };
+};
+
 const buildHostId = (host: HostConfig): string => {
   return buildHostKey(host);
 };
@@ -342,19 +574,11 @@ const removeSessionAndPickActive = (
 };
 
 const createIdentityId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-
-  return `identity-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  return createFallbackId('identity');
 };
 
 const createSnippetId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-
-  return `snippet-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  return createFallbackId('snippet');
 };
 
 const initialCloudSyncSession = readCloudSyncSession();
@@ -419,11 +643,16 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isUnlocking: true, unlockError: null });
     try {
       const response = await unlockAndLoad(masterPassword);
-      const cloudSession = readCloudSyncSession();
-      set({
+      const normalized = normalizeVaultSnapshot({
         hosts: response.hosts,
         identities: response.identities,
-        snippets: response.snippets,
+        snippets: response.snippets
+      });
+      const cloudSession = readCloudSyncSession();
+      set({
+        hosts: normalized.hosts,
+        identities: normalized.identities,
+        snippets: normalized.snippets,
         vaultVersion: response.version,
         vaultUpdatedAt: response.updatedAt,
         appView: 'dashboard',
@@ -440,6 +669,9 @@ export const useHostStore = create<HostState>((set, get) => ({
         isLoadingCloudDevices: false,
         cloudSyncError: null
       });
+      if (normalized.discarded > 0) {
+        toast.warning(`检测到 ${normalized.discarded} 条异常配置，已自动忽略。`);
+      }
 
       if (cloudSession) {
         void Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
@@ -700,18 +932,26 @@ export const useHostStore = create<HostState>((set, get) => ({
           if (latest?.hasData && latest.encryptedBlobBase64 && typeof latest.version === 'number') {
             try {
               const imported = await importVaultSyncBlob(latest.encryptedBlobBase64);
+              const normalized = normalizeVaultSnapshot({
+                hosts: imported.hosts,
+                identities: imported.identities,
+                snippets: imported.snippets
+              });
               set({
                 cloudSyncSession: session,
                 cloudSyncVersion: latest.version,
                 cloudSyncLastAt: latest.updatedAt ?? null,
-                hosts: imported.hosts,
-                identities: imported.identities,
-                snippets: imported.snippets,
+                hosts: normalized.hosts,
+                identities: normalized.identities,
+                snippets: normalized.snippets,
                 vaultVersion: imported.version,
                 vaultUpdatedAt: imported.updatedAt,
                 isSyncingCloud: false,
                 cloudSyncError: null
               });
+              if (normalized.discarded > 0) {
+                toast.warning(`云端恢复时忽略了 ${normalized.discarded} 条异常配置。`);
+              }
               toast.message('检测到云端有更新，已自动合并至最新版本。');
               return;
             } catch (importError) {
@@ -792,18 +1032,26 @@ export const useHostStore = create<HostState>((set, get) => ({
         }
 
         const imported = await importVaultSyncBlob(remote.encryptedBlobBase64);
+        const normalized = normalizeVaultSnapshot({
+          hosts: imported.hosts,
+          identities: imported.identities,
+          snippets: imported.snippets
+        });
         set({
           cloudSyncSession: session,
           cloudSyncVersion: remote.version,
           cloudSyncLastAt: remote.updatedAt ?? status.updatedAt ?? get().cloudSyncLastAt,
-          hosts: imported.hosts,
-          identities: imported.identities,
-          snippets: imported.snippets,
+          hosts: normalized.hosts,
+          identities: normalized.identities,
+          snippets: normalized.snippets,
           vaultVersion: imported.version,
           vaultUpdatedAt: imported.updatedAt,
           isSyncingCloud: false,
           cloudSyncError: null
         });
+        if (normalized.discarded > 0) {
+          toast.warning(`云端同步时忽略了 ${normalized.discarded} 条异常配置。`);
+        }
         toast.success(`已从私有云同步到 v${imported.version}`);
       } catch (error) {
         const fallback = '自动拉取云端失败。';
@@ -815,8 +1063,30 @@ export const useHostStore = create<HostState>((set, get) => ({
       }
     });
   },
-  setHosts: (hosts) => set({ hosts }),
-  setIdentities: (identities) => set({ identities }),
+  setHosts: (hosts) => {
+    const normalized = normalizeVaultSnapshot({
+      hosts,
+      identities: get().identities,
+      snippets: get().snippets
+    });
+    set({
+      hosts: normalized.hosts,
+      identities: normalized.identities,
+      snippets: normalized.snippets
+    });
+  },
+  setIdentities: (identities) => {
+    const normalized = normalizeVaultSnapshot({
+      hosts: get().hosts,
+      identities,
+      snippets: get().snippets
+    });
+    set({
+      hosts: normalized.hosts,
+      identities: normalized.identities,
+      snippets: normalized.snippets
+    });
+  },
   addIdentity: async (payload) => {
     const state = get();
     const normalizedName = payload.name.trim();

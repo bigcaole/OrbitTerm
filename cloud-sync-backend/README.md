@@ -51,6 +51,39 @@
 docker compose up -d --build
 ```
 
+## 预构建 Docker 镜像（GHCR）
+仓库已提供自动构建并推送后端镜像到 GHCR：
+
+- 镜像地址：`ghcr.io/bigcaole/orbitterm-sync-backend`
+- 常用标签：`latest`、`main`、`vX.Y.Z`、`sha-<commit>`
+
+拉取示例：
+
+```bash
+docker pull ghcr.io/bigcaole/orbitterm-sync-backend:latest
+```
+
+若你不希望在服务器本地构建，可将 `docker-compose.yml` 的 `api` 服务改为：
+
+```yaml
+api:
+  image: ghcr.io/bigcaole/orbitterm-sync-backend:latest
+  container_name: orbitterm-sync-api
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    PORT: "8080"
+    DATABASE_URL: "postgres://orbitterm:change_me_now@postgres:5432/orbitterm_sync?sslmode=disable"
+    JWT_SECRET: "replace_with_a_long_random_secret"
+    JWT_EXPIRE_HOURS: "720"
+    ALLOW_INSECURE_HTTP: "false"
+    CORS_ALLOW_ORIGINS: "https://app.orbitterm.example"
+  ports:
+    - "8080:8080"
+```
+
 ## 1Panel 小白部署指引
 1. 准备域名并在 1Panel 上完成证书申请（Let's Encrypt）。
 2. 在 1Panel 新建 PostgreSQL 应用，创建数据库与账号（或直接使用本仓库 `docker-compose.yml` 一键拉起）。
