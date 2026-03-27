@@ -214,6 +214,14 @@ pub fn encrypt_cloud_vault_with_derived_key(
 }
 
 pub fn resolve_lww(local: &CloudVault, incoming: &CloudVault) -> CloudVault {
+    if incoming.version > local.version {
+        return incoming.clone();
+    }
+
+    if incoming.version < local.version {
+        return local.clone();
+    }
+
     if incoming.updated_at > local.updated_at {
         return incoming.clone();
     }
@@ -453,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn lww_should_pick_latest_updated_at() {
+    fn lww_should_prefer_higher_version_even_if_timestamp_is_older() {
         let local = CloudVault {
             version: 4,
             updated_at: 1_746_000_100,
@@ -461,7 +469,26 @@ mod tests {
         };
 
         let incoming = CloudVault {
-            version: 3,
+            version: 5,
+            updated_at: 1_746_000_020,
+            data: json!({"source": "remote"}),
+        };
+
+        let merged = resolve_lww(&local, &incoming);
+        assert_eq!(merged.version, incoming.version);
+        assert_eq!(merged.data, incoming.data);
+    }
+
+    #[test]
+    fn lww_should_use_timestamp_when_versions_are_equal() {
+        let local = CloudVault {
+            version: 4,
+            updated_at: 1_746_000_100,
+            data: json!({"source": "local"}),
+        };
+
+        let incoming = CloudVault {
+            version: 4,
             updated_at: 1_746_000_120,
             data: json!({"source": "remote"}),
         };

@@ -238,9 +238,15 @@ async fn save_vault_inner(
         let version_guard = state.version.read().await;
         (*version_guard).ok_or(VaultError::VaultLocked)?
     };
+    let current_updated_at = {
+        let updated_at_guard = state.updated_at.read().await;
+        (*updated_at_guard).unwrap_or_else(now_unix_ts)
+    };
 
     let next_version = current_version.saturating_add(1);
-    let next_updated_at = now_unix_ts();
+    let now = now_unix_ts();
+    // Keep monotonic update timestamps to avoid cross-device clock skew issues.
+    let next_updated_at = std::cmp::max(now, current_updated_at.saturating_add(1));
 
     let cloud_vault = CloudVault {
         version: next_version,
