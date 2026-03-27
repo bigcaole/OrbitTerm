@@ -1,17 +1,20 @@
 import { useMemo, useState } from 'react';
 import type { AiExplainSshErrorResponse } from '../../services/ai';
 import type { HealthCheckResponse, SshDiagnosticLogEvent } from '../../services/inspector';
+import type { AppLogEntry } from '../../store/useAppLogStore';
 
 interface OrbitInspectorProps {
   open: boolean;
   sessionId: string | null;
   logs: SshDiagnosticLogEvent[];
+  appLogs: AppLogEntry[];
   terminalError: string | null;
   healthReport: HealthCheckResponse | null;
   onClose: () => void;
   onAskAi: (errorMessage: string, logContext: string[]) => Promise<AiExplainSshErrorResponse>;
   onExportBackup: () => Promise<void>;
   onRefreshHealth: () => Promise<void>;
+  onClearAppLogs: () => void;
 }
 
 const MAX_DISPLAY_LOGS = 400;
@@ -37,12 +40,14 @@ export function OrbitInspector({
   open,
   sessionId,
   logs,
+  appLogs,
   terminalError,
   healthReport,
   onClose,
   onAskAi,
   onExportBackup,
-  onRefreshHealth
+  onRefreshHealth,
+  onClearAppLogs
 }: OrbitInspectorProps): JSX.Element | null {
   const [aiAdvice, setAiAdvice] = useState<AiExplainSshErrorResponse | null>(null);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
@@ -56,6 +61,13 @@ export function OrbitInspector({
     }
     return scoped.slice(scoped.length - MAX_DISPLAY_LOGS);
   }, [logs, sessionId]);
+
+  const visibleAppLogs = useMemo(() => {
+    if (appLogs.length <= MAX_DISPLAY_LOGS) {
+      return appLogs;
+    }
+    return appLogs.slice(appLogs.length - MAX_DISPLAY_LOGS);
+  }, [appLogs]);
 
   if (!open) {
     return null;
@@ -225,6 +237,48 @@ export function OrbitInspector({
                   </div>
                   <p className="mt-1 text-[11px] text-[#8ea4c7]">{item.stage}</p>
                   <p className="mt-1 break-words text-[11px] text-[#d6e5ff]">{item.message}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">全局日志</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-[#8ea4c7]">{visibleAppLogs.length} 条</span>
+                <button
+                  className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258]"
+                  onClick={onClearAppLogs}
+                  type="button"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-[320px] space-y-2 overflow-auto rounded-lg border border-[#1f3658] bg-[#050d1b] p-2">
+              {visibleAppLogs.length === 0 && (
+                <p className="text-[11px] text-[#8ea4c7]">暂无全局日志。注册/登录/同步异常会显示在这里。</p>
+              )}
+
+              {visibleAppLogs.map((item) => (
+                <article className="rounded-md border border-[#1a2f4d] bg-[#08162b] p-2" key={item.id}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${levelBadgeClass(item.level)}`}>
+                      {item.level}
+                    </span>
+                    <span className="text-[10px] text-[#90a7ca]">
+                      {new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false })}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-[#8ea4c7]">{item.scope}</p>
+                  <p className="mt-1 break-words text-[11px] text-[#d6e5ff]">{item.message}</p>
+                  {item.detail && (
+                    <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded bg-[#050d1b] p-2 text-[10px] leading-5 text-[#9fb7d8]">
+                      {item.detail}
+                    </pre>
+                  )}
                 </article>
               ))}
             </div>

@@ -34,6 +34,7 @@ import { SettingsDrawer } from './components/settings/SettingsDrawer';
 import { useHostStore } from './store/useHostStore';
 import { useUiSettingsStore } from './store/useUiSettingsStore';
 import { useTransferStore } from './store/useTransferStore';
+import { useAppLogStore } from './store/useAppLogStore';
 import { aiExplainSshError } from './services/ai';
 import type { HealthCheckResponse, SshDiagnosticLogEvent } from './services/inspector';
 import { runHealthCheck } from './services/inspector';
@@ -492,6 +493,8 @@ function App(): JSX.Element {
   const hostUsageStats = useUiSettingsStore((state) => state.hostUsageStats);
   const recordHostConnection = useUiSettingsStore((state) => state.recordHostConnection);
   const applyTransferProgressEvent = useTransferStore((state) => state.applyProgressEvent);
+  const appLogs = useAppLogStore((state) => state.logs);
+  const clearAppLogs = useAppLogStore((state) => state.clearLogs);
 
   const activeThemePreset = useMemo(() => resolveThemePreset(themePresetId), [themePresetId]);
   const syncLastText = useMemo(() => {
@@ -2883,9 +2886,11 @@ function App(): JSX.Element {
       />
 
       <OrbitInspector
+        appLogs={appLogs}
         healthReport={healthReport}
         logs={sshDiagnosticLogs}
         onAskAi={handleAskAiForSshFix}
+        onClearAppLogs={clearAppLogs}
         onClose={() => {
           setIsInspectorOpen(false);
         }}

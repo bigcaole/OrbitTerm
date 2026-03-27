@@ -153,6 +153,9 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
+	if err := ensureSchema(ctx, db); err != nil {
+		log.Fatalf("数据库初始化失败: %v", err)
+	}
 
 	a := &app{
 		cfg:         cfg,
@@ -201,6 +204,60 @@ func main() {
 	if err := router.Run(addr); err != nil {
 		log.Fatalf("服务启动失败: %v", err)
 	}
+}
+
+func ensureSchema(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			email TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS vault_blobs (
+			user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+			encrypted_blob BYTEA NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS snippets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			command TEXT NOT NULL,
+			tags TEXT[] NOT NULL DEFAULT '{}',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_devices (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			device_name TEXT NOT NULL,
+			device_location TEXT NOT NULL DEFAULT '未知地区',
+			user_agent TEXT NOT NULL DEFAULT 'unknown',
+			device_fingerprint TEXT NOT NULL,
+			current_token_jti TEXT,
+			token_expires_at TIMESTAMPTZ,
+			last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			revoked_at TIMESTAMPTZ
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_updated_at ON vault_blobs(updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_version ON vault_blobs(version)`,
+		`CREATE INDEX IF NOT EXISTS idx_snippets_user_updated_at ON snippets(user_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_snippets_tags_gin ON snippets USING GIN(tags)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_devices_user_fingerprint ON user_devices(user_id, device_fingerprint)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_devices_user_last_seen ON user_devices(user_id, last_seen_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_devices_token_jti ON user_devices(current_token_jti)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadConfig() (config, error) {
@@ -560,8 +617,17 @@ func (a *app) handleRegister(c *gin.Context) {
 		string(hashBytes),
 	).Scan(&userID)
 	if err != nil {
+		log.Printf("[register] insert user failed: email=%s ip=%s err=%v", email, c.ClientIP(), err)
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate") || strings.Contains(err.Error(), "23505") {
 			c.JSON(http.StatusConflict, gin.H{"message": "该邮箱已注册，请直接登录。"})
+			return
+		}
+		if strings.Contains(strings.ToLower(err.Error()), `relation "users" does not exist`) {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "数据库表不存在，请检查初始化步骤。"})
+			return
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "gen_random_uuid") {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "数据库缺少 pgcrypto 扩展，请联系管理员。"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "创建账号失败，请稍后重试。"})
@@ -571,6 +637,7 @@ func (a *app) handleRegister(c *gin.Context) {
 	meta := extractDeviceMeta(c, req.DeviceName, req.DeviceLocation)
 	token, deviceID, err := a.issueTokenForDevice(c.Request.Context(), userID, email, meta)
 	if err != nil {
+		log.Printf("[register] issue token failed: user=%s email=%s err=%v", userID, email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "登录令牌生成失败。"})
 		return
 	}

@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { logAppError } from '../services/appLog';
 
 interface AppErrorBoundaryProps {
   children: ReactNode;
@@ -29,6 +30,11 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
   public componentDidCatch(error: unknown, info: ErrorInfo): void {
     const message = error instanceof Error ? `${error.message}\n${info.componentStack}` : info.componentStack;
     console.error('[OrbitTermErrorBoundary]', message);
+    logAppError('renderer', '前端渲染异常', {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      componentStack: info.componentStack
+    });
   }
 
   public render(): ReactNode {

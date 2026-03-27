@@ -1,3 +1,4 @@
+import { logAppError, logAppInfo, logAppWarn } from './appLog';
 const CLOUD_SYNC_SESSION_KEY = 'orbitterm:cloud-sync-session:v1';
 const REQUEST_TIMEOUT_MS = 12_000;
 
@@ -72,9 +73,11 @@ export class CloudSyncConflictError extends Error {
 const ensureHttpsEndpoint = (apiBaseUrl: string): string => {
   const normalized = apiBaseUrl.trim().replace(/\/+$/, '');
   if (!normalized) {
+    logAppWarn('cloud-sync', '同步服务地址为空');
     throw new Error('同步服务地址不能为空。');
   }
   if (!normalized.startsWith('https://')) {
+    logAppWarn('cloud-sync', '同步服务地址非 HTTPS', normalized);
     throw new Error('同步服务必须使用 HTTPS 地址。');
   }
   return normalized;
@@ -93,8 +96,13 @@ const withTimeout = async (input: RequestInfo | URL, init?: RequestInit): Promis
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
+      logAppWarn('cloud-sync', '云同步请求超时', String(input));
       throw new Error('云同步请求超时，请检查网络后重试。');
     }
+    logAppError('cloud-sync', '云同步请求失败', {
+      input: String(input),
+      error: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   } finally {
     window.clearTimeout(timeoutHandle);
@@ -112,6 +120,10 @@ const readJson = async <T>(response: Response, fallbackMessage: string): Promise
     } catch (_error) {
       // Ignore parse errors.
     }
+    logAppWarn('cloud-sync', `云同步请求返回异常状态 ${response.status}`, {
+      url: response.url,
+      message: detail
+    });
     throw new Error(detail);
   }
 
@@ -180,27 +192,40 @@ export const registerCloudSync = async (
   password: string
 ): Promise<CloudSyncSession> => {
   const endpoint = ensureHttpsEndpoint(apiBaseUrl);
-  const response = await withTimeout(`${endpoint}/register`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
+  try {
+    const response = await withTimeout(`${endpoint}/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        deviceName: detectDeviceName(),
+        deviceLocation: detectDeviceLocation()
+      })
+    });
+    const payload = await readJson<AuthResponse>(response, '注册失败，请稍后重试。');
+    const session: CloudSyncSession = {
+      apiBaseUrl: endpoint,
+      email: payload.user.email,
+      token: payload.token,
+      currentDeviceId: payload.currentDeviceId
+    };
+    saveSession(session);
+    logAppInfo('cloud-sync', '注册同步账号成功', {
+      endpoint,
+      email: payload.user.email
+    });
+    return session;
+  } catch (error) {
+    logAppError('cloud-sync', '注册同步账号失败', {
+      endpoint,
       email,
-      password,
-      deviceName: detectDeviceName(),
-      deviceLocation: detectDeviceLocation()
-    })
-  });
-  const payload = await readJson<AuthResponse>(response, '注册失败，请稍后重试。');
-  const session: CloudSyncSession = {
-    apiBaseUrl: endpoint,
-    email: payload.user.email,
-    token: payload.token,
-    currentDeviceId: payload.currentDeviceId
-  };
-  saveSession(session);
-  return session;
+      error: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  }
 };
 
 export const loginCloudSync = async (
@@ -209,27 +234,40 @@ export const loginCloudSync = async (
   password: string
 ): Promise<CloudSyncSession> => {
   const endpoint = ensureHttpsEndpoint(apiBaseUrl);
-  const response = await withTimeout(`${endpoint}/login`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
+  try {
+    const response = await withTimeout(`${endpoint}/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        deviceName: detectDeviceName(),
+        deviceLocation: detectDeviceLocation()
+      })
+    });
+    const payload = await readJson<AuthResponse>(response, '登录失败，请检查账号或密码。');
+    const session: CloudSyncSession = {
+      apiBaseUrl: endpoint,
+      email: payload.user.email,
+      token: payload.token,
+      currentDeviceId: payload.currentDeviceId
+    };
+    saveSession(session);
+    logAppInfo('cloud-sync', '登录同步账号成功', {
+      endpoint,
+      email: payload.user.email
+    });
+    return session;
+  } catch (error) {
+    logAppError('cloud-sync', '登录同步账号失败', {
+      endpoint,
       email,
-      password,
-      deviceName: detectDeviceName(),
-      deviceLocation: detectDeviceLocation()
-    })
-  });
-  const payload = await readJson<AuthResponse>(response, '登录失败，请检查账号或密码。');
-  const session: CloudSyncSession = {
-    apiBaseUrl: endpoint,
-    email: payload.user.email,
-    token: payload.token,
-    currentDeviceId: payload.currentDeviceId
-  };
-  saveSession(session);
-  return session;
+      error: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  }
 };
 
 const authHeaders = (token: string): Record<string, string> => ({
