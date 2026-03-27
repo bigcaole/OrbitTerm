@@ -2,6 +2,9 @@
 
 本服务用于给 OrbitTerm 提供账号化的加密金库同步能力。
 
+完整部署教程（面向新手，含客户端双端安装、服务器 Docker 部署、反向代理与变量说明）：
+- [../docs/DEPLOYMENT_GUIDE.md](../docs/DEPLOYMENT_GUIDE.md)
+
 ## 已实现接口
 - `POST /register`：注册账号，返回 JWT
 - `POST /login`：登录账号，返回 JWT
