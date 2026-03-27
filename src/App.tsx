@@ -1797,7 +1797,7 @@ function App(): JSX.Element {
       return;
     }
 
-    await syncPullFromCloud();
+    await syncPullFromCloud({ source: 'manual', force: true });
     const latestError = useHostStore.getState().cloudSyncError;
     if (latestError) {
       toast.error(latestError);
@@ -1812,7 +1812,7 @@ function App(): JSX.Element {
       return;
     }
 
-    await syncPushToCloud();
+    await syncPushToCloud({ source: 'manual', force: true });
     const latestError = useHostStore.getState().cloudSyncError;
     if (latestError) {
       toast.error(latestError);

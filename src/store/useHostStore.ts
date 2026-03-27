@@ -19,7 +19,6 @@ import {
 import {
   CloudSyncConflictError,
   clearCloudSyncSession,
-  getCloudSyncStatus,
   listCloudDevices,
   loginCloudSync,
   logoutAllCloudDevices,
@@ -36,6 +35,17 @@ import { buildHostKey } from '../utils/hostKey';
 
 type WizardStep = 1 | 2 | 3;
 type AppView = 'locked' | 'dashboard';
+type CloudSyncTriggerSource = 'auto' | 'manual';
+
+interface CloudSyncPushOptions {
+  force?: boolean;
+  source?: CloudSyncTriggerSource;
+}
+
+interface CloudSyncPullOptions {
+  force?: boolean;
+  source?: CloudSyncTriggerSource;
+}
 
 export interface TerminalSession {
   id: string;
@@ -93,8 +103,8 @@ interface HostState {
   loadCloudDevices: () => Promise<void>;
   revokeCloudDevice: (deviceId: string) => Promise<void>;
   revokeAllCloudDevices: () => Promise<void>;
-  syncPushToCloud: () => Promise<void>;
-  syncPullFromCloud: () => Promise<void>;
+  syncPushToCloud: (options?: CloudSyncPushOptions) => Promise<void>;
+  syncPullFromCloud: (options?: CloudSyncPullOptions) => Promise<void>;
   setHosts: (hosts: HostConfig[]) => void;
   setIdentities: (identities: IdentityConfig[]) => void;
   addIdentity: (payload: {
@@ -587,6 +597,22 @@ const CLOUD_PUSH_DEBOUNCE_MS = 800;
 let cloudSyncQueue: Promise<void> = Promise.resolve();
 let cloudPushDebounceTimer: number | null = null;
 
+const isLikelyMasterPasswordMismatch = (message: string): boolean => {
+  return (
+    message.includes('主密码错误') ||
+    message.includes('校验失败') ||
+    message.includes('UnlockFailed')
+  );
+};
+
+const buildCloudPullErrorMessage = (error: unknown, fallback: string): string => {
+  const message = error instanceof Error ? error.message : fallback;
+  if (isLikelyMasterPasswordMismatch(message)) {
+    return '云端数据解密失败：当前设备主密码与云端不一致。请使用与其他设备一致的主密码解锁后再拉取。';
+  }
+  return message || fallback;
+};
+
 const enqueueCloudSyncTask = <T>(task: () => Promise<T>): Promise<T> => {
   const next = cloudSyncQueue.then(task, task);
   cloudSyncQueue = next.then(
@@ -603,7 +629,7 @@ const scheduleCloudPush = (getState: () => HostState): void => {
 
   cloudPushDebounceTimer = window.setTimeout(() => {
     cloudPushDebounceTimer = null;
-    void getState().syncPushToCloud();
+    void getState().syncPushToCloud({ source: 'auto' });
   }, CLOUD_PUSH_DEBOUNCE_MS);
 };
 
@@ -901,20 +927,43 @@ export const useHostStore = create<HostState>((set, get) => ({
       throw new Error(message || fallback);
     }
   },
-  syncPushToCloud: async () => {
+  syncPushToCloud: async (options) => {
     return enqueueCloudSyncTask(async () => {
       const state = get();
       const session = state.cloudSyncSession ?? readCloudSyncSession();
       if (!session || state.appView !== 'dashboard') {
         return;
       }
+      const source = options?.source ?? 'auto';
+      const isManual = source === 'manual';
 
       set({ isSyncingCloud: true, cloudSyncError: null });
       try {
         const localBlob = await exportVaultSyncBlob();
-        const status = await getCloudSyncStatus(session);
+        let baseVersion = get().cloudSyncVersion;
+        if (baseVersion === null || baseVersion < 0) {
+          const remote = await pullCloudSyncBlob(session);
+          if (remote.hasData && typeof remote.version === 'number') {
+            baseVersion = remote.version;
+            if (!isManual && !options?.force) {
+              const guardMessage =
+                '检测到云端已有数据，已暂停自动推送以防覆盖。请先执行“立即拉取”完成对齐后再继续编辑。';
+              set({
+                cloudSyncSession: session,
+                cloudSyncVersion: remote.version,
+                cloudSyncLastAt: remote.updatedAt ?? null,
+                isSyncingCloud: false,
+                cloudSyncError: guardMessage
+              });
+              return;
+            }
+          } else {
+            baseVersion = 0;
+          }
+        }
+
         const pushResult = await pushCloudSyncBlob(session, {
-          version: status.hasData ? status.version : 0,
+          version: baseVersion,
           encryptedBlobBase64: localBlob.encryptedBlobBase64
         });
         set({
@@ -974,61 +1023,47 @@ export const useHostStore = create<HostState>((set, get) => ({
       }
     });
   },
-  syncPullFromCloud: async () => {
+  syncPullFromCloud: async (options) => {
     return enqueueCloudSyncTask(async () => {
       const state = get();
       const session = state.cloudSyncSession ?? readCloudSyncSession();
       if (!session || state.appView !== 'dashboard') {
         return;
       }
+      const force = options?.force === true;
 
       set({ isSyncingCloud: true, cloudSyncError: null });
       try {
-        const status = await getCloudSyncStatus(session);
-        if (!status.hasData) {
+        const remote = await pullCloudSyncBlob(session);
+        if (!remote.hasData) {
           set({
             cloudSyncSession: session,
             cloudSyncVersion: 0,
-            cloudSyncLastAt: status.updatedAt ?? null,
+            cloudSyncLastAt: remote.updatedAt ?? null,
             isSyncingCloud: false,
             cloudSyncError: null
           });
           return;
+        }
+
+        if (typeof remote.version !== 'number') {
+          throw new Error('云端同步数据格式无效，请检查同步服务返回内容。');
         }
 
         const localCloudVersion = get().cloudSyncVersion ?? 0;
-        if (status.version <= localCloudVersion) {
-          set({
-            cloudSyncSession: session,
-            cloudSyncVersion: status.version,
-            cloudSyncLastAt: status.updatedAt ?? get().cloudSyncLastAt,
-            isSyncingCloud: false,
-            cloudSyncError: null
-          });
-          return;
-        }
-
-        const remote = await pullCloudSyncBlob(session);
-        if (!remote.hasData || !remote.encryptedBlobBase64 || typeof remote.version !== 'number') {
-          set({
-            cloudSyncSession: session,
-            cloudSyncVersion: status.version,
-            cloudSyncLastAt: status.updatedAt ?? get().cloudSyncLastAt,
-            isSyncingCloud: false,
-            cloudSyncError: null
-          });
-          return;
-        }
-
-        if (remote.version <= localCloudVersion) {
+        if (!force && remote.version <= localCloudVersion) {
           set({
             cloudSyncSession: session,
             cloudSyncVersion: remote.version,
-            cloudSyncLastAt: remote.updatedAt ?? status.updatedAt ?? get().cloudSyncLastAt,
+            cloudSyncLastAt: remote.updatedAt ?? get().cloudSyncLastAt,
             isSyncingCloud: false,
             cloudSyncError: null
           });
           return;
+        }
+
+        if (!remote.encryptedBlobBase64) {
+          throw new Error('云端同步数据格式无效，请检查同步服务返回内容。');
         }
 
         const imported = await importVaultSyncBlob(remote.encryptedBlobBase64);
@@ -1040,7 +1075,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         set({
           cloudSyncSession: session,
           cloudSyncVersion: remote.version,
-          cloudSyncLastAt: remote.updatedAt ?? status.updatedAt ?? get().cloudSyncLastAt,
+          cloudSyncLastAt: remote.updatedAt ?? get().cloudSyncLastAt,
           hosts: normalized.hosts,
           identities: normalized.identities,
           snippets: normalized.snippets,
@@ -1055,7 +1090,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         toast.success(`已从私有云同步到 v${imported.version}`);
       } catch (error) {
         const fallback = '自动拉取云端失败。';
-        const message = error instanceof Error ? error.message : fallback;
+        const message = buildCloudPullErrorMessage(error, fallback);
         set({
           isSyncingCloud: false,
           cloudSyncError: message || fallback

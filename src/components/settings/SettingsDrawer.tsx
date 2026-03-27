@@ -884,8 +884,13 @@ export function SettingsDrawer({
                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={isSyncingCloud || !cloudSyncSession}
                 onClick={() => {
-                  void syncPullFromCloud()
+                  void syncPullFromCloud({ source: 'manual', force: true })
                     .then(() => {
+                      const latestError = useHostStore.getState().cloudSyncError;
+                      if (latestError) {
+                        toast.error(latestError);
+                        return;
+                      }
                       toast.success('已执行云端拉取检查');
                     })
                     .catch((error) => {
