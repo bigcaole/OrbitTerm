@@ -1,17 +1,51 @@
-import { useEffect, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type MouseEvent as ReactMouseEvent
+} from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { Group, Panel, Separator } from 'react-resizable-panels';
 import { Terminal, type ITheme } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebglAddon } from 'xterm-addon-webgl';
 import { Unicode11Addon } from 'xterm-addon-unicode11';
 import 'xterm/css/xterm.css';
-import { sshResize, sshWrite } from '../../services/ssh';
-import { toRgba } from '../../theme/loyuTheme';
+import { sshResize } from '../../services/ssh';
+import { toRgba } from '../../theme/orbitTheme';
 
-interface LoyuTerminalProps {
+export type SplitDirection = 'horizontal' | 'vertical';
+
+export interface TerminalSplitPane {
+  id: string;
   sessionId: string;
-  isActive: boolean;
-  onSessionClosed: () => void;
+  hostId: string;
+  title: string;
+}
+
+export type TerminalLayoutNode =
+  | {
+      type: 'pane';
+      pane: TerminalSplitPane;
+    }
+  | {
+      type: 'split';
+      id: string;
+      direction: SplitDirection;
+      first: TerminalLayoutNode;
+      second: TerminalLayoutNode;
+      sizes?: [number, number];
+    };
+
+interface OrbitTerminalProps {
+  layout: TerminalLayoutNode;
+  activePaneId: string;
+  isTabActive: boolean;
+  onActivePaneChange: (paneId: string) => void;
+  onPaneContextMenu: (event: ReactMouseEvent<HTMLElement>, paneId: string) => void;
+  onPaneInput: (sessionId: string, data: string) => void;
+  onPaneSessionClosed: (paneId: string, sessionId: string) => void;
   onTerminalError: (message: string) => void;
   fontFamily: string;
   fontSize: number;
@@ -20,6 +54,24 @@ interface LoyuTerminalProps {
   surfaceOpacity: number;
   blurPx: number;
   borderColor: string;
+}
+
+interface TerminalInstanceProps {
+  pane: TerminalSplitPane;
+  isFocused: boolean;
+  fontFamily: string;
+  fontSize: number;
+  theme: ITheme;
+  surfaceHex: string;
+  surfaceOpacity: number;
+  blurPx: number;
+  borderColor: string;
+  onFocusPane: (paneId: string) => void;
+  onPaneContextMenu: (event: ReactMouseEvent<HTMLElement>, paneId: string) => void;
+  onPaneInput: (sessionId: string, data: string) => void;
+  onPaneSessionClosed: (paneId: string, sessionId: string) => void;
+  onTerminalError: (message: string) => void;
+  onRegisterApi: (paneId: string, api: TerminalInstanceApi | null) => void;
 }
 
 interface SshOutputEvent {
@@ -36,25 +88,42 @@ interface SshClosedEvent {
   sessionId: string;
 }
 
+interface TerminalInstanceApi {
+  fit: () => void;
+  focus: () => void;
+}
+
 const OUTPUT_FLUSH_CHARS_PER_FRAME = 64 * 1024;
 const OUTPUT_BUFFER_LIMIT_CHARS = 2 * 1024 * 1024;
+
 const isWindowsPlatform = (): boolean => {
   return navigator.userAgent.toLowerCase().includes('windows');
 };
 
-export function LoyuTerminal({
-  sessionId,
-  isActive,
-  onSessionClosed,
-  onTerminalError,
+const collectPaneIds = (node: TerminalLayoutNode): string[] => {
+  if (node.type === 'pane') {
+    return [node.pane.id];
+  }
+  return [...collectPaneIds(node.first), ...collectPaneIds(node.second)];
+};
+
+function TerminalInstance({
+  pane,
+  isFocused,
   fontFamily,
   fontSize,
   theme,
   surfaceHex,
   surfaceOpacity,
   blurPx,
-  borderColor
-}: LoyuTerminalProps): JSX.Element {
+  borderColor,
+  onFocusPane,
+  onPaneContextMenu,
+  onPaneInput,
+  onPaneSessionClosed,
+  onTerminalError,
+  onRegisterApi
+}: TerminalInstanceProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -67,16 +136,22 @@ export function LoyuTerminal({
   const dropNoticeShownRef = useRef<boolean>(false);
   const flushRafRef = useRef<number>(0);
   const disposedRef = useRef<boolean>(false);
-  const onSessionClosedRef = useRef<() => void>(onSessionClosed);
-  const onTerminalErrorRef = useRef<(message: string) => void>(onTerminalError);
+
+  const onPaneSessionClosedRef = useRef(onPaneSessionClosed);
+  const onTerminalErrorRef = useRef(onTerminalError);
+  const onPaneInputRef = useRef(onPaneInput);
 
   useEffect(() => {
-    onSessionClosedRef.current = onSessionClosed;
-  }, [onSessionClosed]);
+    onPaneSessionClosedRef.current = onPaneSessionClosed;
+  }, [onPaneSessionClosed]);
 
   useEffect(() => {
     onTerminalErrorRef.current = onTerminalError;
   }, [onTerminalError]);
+
+  useEffect(() => {
+    onPaneInputRef.current = onPaneInput;
+  }, [onPaneInput]);
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -92,9 +167,11 @@ export function LoyuTerminal({
 
     const terminal = new Terminal({
       allowProposedApi: true,
+      allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
       cursorStyle: 'bar',
+      customGlyphs: true,
       drawBoldTextInBrightColors: true,
       fontFamily,
       fontSize,
@@ -135,12 +212,23 @@ export function LoyuTerminal({
       const cols = terminal.cols;
       const rows = terminal.rows;
       if (cols > 0 && rows > 0) {
-        void sshResize(sessionId, cols, rows).catch(() => {
+        void sshResize(pane.sessionId, cols, rows).catch(() => {
           onTerminalErrorRef.current('终端窗口同步失败，请检查网络连接。');
         });
       }
     };
     resizeSyncRef.current = pushResize;
+
+    const instanceApi: TerminalInstanceApi = {
+      fit: () => {
+        fitAddon.fit();
+        pushResize();
+      },
+      focus: () => {
+        terminal.focus();
+      }
+    };
+    onRegisterApi(pane.id, instanceApi);
 
     pushResize();
 
@@ -230,16 +318,14 @@ export function LoyuTerminal({
     };
 
     const dataDisposable = terminal.onData((data) => {
-      void sshWrite(sessionId, data).catch(() => {
-        onTerminalErrorRef.current('发送输入失败，连接可能已断开。');
-      });
+      onPaneInputRef.current(pane.sessionId, data);
     });
 
     const unlisteners: UnlistenFn[] = [];
     let disposed = false;
 
     void listen<SshOutputEvent>('ssh-output', (event) => {
-      if (event.payload.sessionId !== sessionId) {
+      if (event.payload.sessionId !== pane.sessionId) {
         return;
       }
 
@@ -254,7 +340,7 @@ export function LoyuTerminal({
 
     void listen<SshErrorEvent>('ssh-error', (event) => {
       const eventSessionId = event.payload.sessionId;
-      if (eventSessionId && eventSessionId !== sessionId) {
+      if (eventSessionId && eventSessionId !== pane.sessionId) {
         return;
       }
       onTerminalErrorRef.current(event.payload.message);
@@ -267,10 +353,10 @@ export function LoyuTerminal({
     });
 
     void listen<SshClosedEvent>('ssh-closed', (event) => {
-      if (event.payload.sessionId !== sessionId) {
+      if (event.payload.sessionId !== pane.sessionId) {
         return;
       }
-      onSessionClosedRef.current();
+      onPaneSessionClosedRef.current(pane.id, pane.sessionId);
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -302,6 +388,8 @@ export function LoyuTerminal({
     return () => {
       disposed = true;
       disposedRef.current = true;
+
+      onRegisterApi(pane.id, null);
 
       if (rafId !== 0) {
         cancelAnimationFrame(rafId);
@@ -336,7 +424,7 @@ export function LoyuTerminal({
       terminalRef.current = null;
       terminal.dispose();
     };
-  }, [sessionId]);
+  }, [onRegisterApi, pane.id, pane.sessionId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -352,30 +440,197 @@ export function LoyuTerminal({
   }, [fontFamily, fontSize, theme]);
 
   useEffect(() => {
-    if (!isActive) {
+    if (!isFocused) {
       return;
     }
 
     const rafId = window.requestAnimationFrame(() => {
       fitAddonRef.current?.fit();
       resizeSyncRef.current?.();
+      terminalRef.current?.focus();
     });
 
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [isActive]);
+  }, [isFocused]);
 
   return (
     <div
-      className="h-full min-h-[340px] w-full rounded-2xl border p-2"
-      ref={hostRef}
-      style={{
-        borderColor,
-        background: toRgba(surfaceHex, surfaceOpacity / 100),
-        backdropFilter: `blur(${blurPx}px)`,
-        WebkitBackdropFilter: `blur(${blurPx}px)`
+      className={`flex h-full min-h-0 flex-col rounded-xl border p-2 ${
+        isFocused ? 'border-[#4f78af] bg-[#07111f]' : 'border-[#243954] bg-[#050d18]'
+      }`}
+      onContextMenu={(event) => {
+        onPaneContextMenu(event, pane.id);
       }}
-    />
+      onMouseDown={() => {
+        onFocusPane(pane.id);
+      }}
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <button
+          className={`min-w-0 max-w-[240px] truncate rounded-md border px-2 py-1 text-[11px] ${
+            isFocused
+              ? 'border-[#5b88c0] bg-[#11213a] text-[#d8e9ff]'
+              : 'border-[#2a4468] bg-[#0b1a2e] text-[#94abd0]'
+          }`}
+          onClick={() => {
+            onFocusPane(pane.id);
+          }}
+          title={pane.title}
+          type="button"
+        >
+          {pane.title}
+        </button>
+        <span className="text-[10px] text-[#8ca2c5]">右键分屏</span>
+      </div>
+      <div className="min-h-0 flex-1">
+        <div
+          className="h-full min-h-[220px] w-full rounded-2xl border p-2"
+          ref={hostRef}
+          style={{
+            borderColor,
+            background: toRgba(surfaceHex, surfaceOpacity / 100),
+            backdropFilter: `blur(${blurPx}px)`,
+            WebkitBackdropFilter: `blur(${blurPx}px)`
+          }}
+        />
+      </div>
+    </div>
   );
+}
+
+export function OrbitTerminal({
+  layout,
+  activePaneId,
+  isTabActive,
+  onActivePaneChange,
+  onPaneContextMenu,
+  onPaneInput,
+  onPaneSessionClosed,
+  onTerminalError,
+  fontFamily,
+  fontSize,
+  theme,
+  surfaceHex,
+  surfaceOpacity,
+  blurPx,
+  borderColor
+}: OrbitTerminalProps): JSX.Element {
+  const terminalApiMapRef = useRef<Map<string, TerminalInstanceApi>>(new Map());
+  const fitRafRef = useRef<number>(0);
+
+  const paneIds = useMemo(() => collectPaneIds(layout), [layout]);
+
+  const fitAllTerminals = useCallback((): void => {
+    for (const paneId of paneIds) {
+      const api = terminalApiMapRef.current.get(paneId);
+      api?.fit();
+    }
+  }, [paneIds]);
+
+  const scheduleFitAll = useCallback((): void => {
+    if (fitRafRef.current !== 0) {
+      return;
+    }
+    fitRafRef.current = window.requestAnimationFrame(() => {
+      fitRafRef.current = 0;
+      fitAllTerminals();
+    });
+  }, [fitAllTerminals]);
+
+  const registerApi = useCallback((paneId: string, api: TerminalInstanceApi | null): void => {
+    if (!api) {
+      terminalApiMapRef.current.delete(paneId);
+      return;
+    }
+    terminalApiMapRef.current.set(paneId, api);
+  }, []);
+
+  useEffect(() => {
+    const activeSet = new Set(paneIds);
+    for (const paneId of terminalApiMapRef.current.keys()) {
+      if (!activeSet.has(paneId)) {
+        terminalApiMapRef.current.delete(paneId);
+      }
+    }
+  }, [paneIds]);
+
+  useEffect(() => {
+    scheduleFitAll();
+  }, [layout, scheduleFitAll]);
+
+  useEffect(() => {
+    if (!isTabActive) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      const activeApi = terminalApiMapRef.current.get(activePaneId);
+      activeApi?.fit();
+      activeApi?.focus();
+    });
+
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
+  }, [activePaneId, isTabActive]);
+
+  useEffect(() => {
+    return () => {
+      if (fitRafRef.current !== 0) {
+        cancelAnimationFrame(fitRafRef.current);
+        fitRafRef.current = 0;
+      }
+    };
+  }, []);
+
+  const renderNode = (node: TerminalLayoutNode): JSX.Element => {
+    if (node.type === 'pane') {
+      return (
+        <TerminalInstance
+          blurPx={blurPx}
+          borderColor={borderColor}
+          fontFamily={fontFamily}
+          fontSize={fontSize}
+          isFocused={isTabActive && activePaneId === node.pane.id}
+          key={node.pane.id}
+          onFocusPane={onActivePaneChange}
+          onPaneContextMenu={onPaneContextMenu}
+          onPaneInput={onPaneInput}
+          onPaneSessionClosed={onPaneSessionClosed}
+          onRegisterApi={registerApi}
+          onTerminalError={onTerminalError}
+          pane={node.pane}
+          surfaceHex={surfaceHex}
+          surfaceOpacity={surfaceOpacity}
+          theme={theme}
+        />
+      );
+    }
+
+    return (
+      <Group
+        className="h-full w-full"
+        key={node.id}
+        orientation={node.direction}
+      >
+        <Panel defaultSize={node.sizes?.[0] ?? 50} minSize={12}>
+          {renderNode(node.first)}
+        </Panel>
+        <Separator
+          className={`rounded ${
+            node.direction === 'horizontal'
+              ? 'mx-1 w-1 cursor-col-resize bg-[#173255] hover:bg-[#2a568d]'
+              : 'my-1 h-1 cursor-row-resize bg-[#173255] hover:bg-[#2a568d]'
+          }`}
+        />
+        <Panel defaultSize={node.sizes?.[1] ?? 50} minSize={12}>
+          {renderNode(node.second)}
+        </Panel>
+      </Group>
+    );
+  };
+
+  return <div className="h-full min-h-0">{renderNode(layout)}</div>;
 }

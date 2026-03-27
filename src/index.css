@@ -6,6 +6,9 @@
   font-family: 'PingFang SC', 'SF Pro Text', 'Helvetica Neue', sans-serif;
   color: #0f172a;
   text-rendering: optimizeLegibility;
+  --acrylic-blur: 18px;
+  --acrylic-saturation: 128%;
+  --acrylic-brightness: 104%;
 }
 
 * {
@@ -28,6 +31,12 @@ body {
 }
 
 .glass-card {
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter:
+    blur(var(--acrylic-blur))
+    saturate(var(--acrylic-saturation))
+    brightness(var(--acrylic-brightness));
+  -webkit-backdrop-filter:
+    blur(var(--acrylic-blur))
+    saturate(var(--acrylic-saturation))
+    brightness(var(--acrylic-brightness));
 }

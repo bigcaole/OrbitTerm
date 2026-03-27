@@ -3,7 +3,7 @@ import { getAppVersion } from '../../services/appInfo';
 import { openExternalLink } from '../../services/externalLink';
 import { openReleasePage, type ReleaseNoticeState } from '../../services/updater';
 
-interface AboutLoyuModalProps {
+interface AboutOrbitTermModalProps {
   open: boolean;
   onClose: () => void;
   releaseNotice: ReleaseNoticeState;
@@ -23,7 +23,7 @@ const formatCheckTime = (value: string | null): string => {
   return date.toLocaleString('zh-CN', { hour12: false });
 };
 
-export function AboutLoyuModal({ open, onClose, releaseNotice }: AboutLoyuModalProps): JSX.Element | null {
+export function AboutOrbitTermModal({ open, onClose, releaseNotice }: AboutOrbitTermModalProps): JSX.Element | null {
   const [version, setVersion] = useState<string>('0.1.15');
 
   useEffect(() => {

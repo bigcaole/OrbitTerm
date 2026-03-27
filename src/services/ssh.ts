@@ -7,6 +7,25 @@ export interface SshConnectedResponse {
   ptyBackend: string;
 }
 
+export type SshKeyAlgorithm = 'ed25519' | 'rsa4096';
+
+export interface SshGenerateKeypairResponse {
+  algorithm: SshKeyAlgorithm;
+  privateKey: string;
+  publicKey: string;
+  fingerprint: string;
+}
+
+export interface SshDerivePublicKeyResponse {
+  publicKey: string;
+  fingerprint: string;
+}
+
+export interface SshExportPrivateKeyResponse {
+  path: string;
+  bytes: number;
+}
+
 interface SshConnectRequest {
   sessionId?: string;
   hostConfig: HostConfig;
@@ -20,6 +39,20 @@ interface SshConnectRequest {
 export interface ProxyJumpHop {
   hostConfig: HostConfig;
   identityConfig: IdentityConfig;
+}
+
+export interface SysStatus {
+  cpuUsagePercent: number;
+  memoryUsagePercent: number;
+  netRxBytesPerSec: number;
+  netTxBytesPerSec: number;
+  sampledAt: number;
+  intervalSecs: number;
+}
+
+export interface SshSysStatusEvent {
+  sessionId: string;
+  status: SysStatus;
 }
 
 interface SshOutputEvent {
@@ -99,6 +132,61 @@ export const sshDisconnect = async (sessionId: string): Promise<void> => {
   await tauriInvoke<void>('ssh_disconnect', {
     request: {
       sessionId
+    }
+  });
+};
+
+export const sshSetPulseActivity = async (sessionId: string, active: boolean): Promise<void> => {
+  await tauriInvoke<void>('ssh_set_pulse_activity', {
+    request: {
+      sessionId,
+      active
+    }
+  });
+};
+
+export const sshGenerateKeypair = async (
+  algorithm: SshKeyAlgorithm,
+  comment?: string
+): Promise<SshGenerateKeypairResponse> => {
+  return tauriInvoke<SshGenerateKeypairResponse>('ssh_generate_keypair', {
+    request: {
+      algorithm,
+      comment: comment?.trim() ? comment.trim() : undefined
+    }
+  });
+};
+
+export const sshDerivePublicKey = async (
+  privateKey: string
+): Promise<SshDerivePublicKeyResponse> => {
+  return tauriInvoke<SshDerivePublicKeyResponse>('ssh_derive_public_key', {
+    request: {
+      privateKey
+    }
+  });
+};
+
+export const sshDeployPublicKey = async (
+  sessionId: string,
+  publicKey: string
+): Promise<void> => {
+  await tauriInvoke<void>('ssh_deploy_public_key', {
+    request: {
+      sessionId,
+      publicKey
+    }
+  });
+};
+
+export const sshExportPrivateKey = async (
+  privateKey: string,
+  destinationPath: string
+): Promise<SshExportPrivateKeyResponse> => {
+  return tauriInvoke<SshExportPrivateKeyResponse>('ssh_export_private_key', {
+    request: {
+      privateKey,
+      destinationPath
     }
   });
 };

@@ -108,7 +108,15 @@ export const finalHostSchema = z.object({
   })
 });
 
+export const snippetSchema = z.object({
+  id: z.string().min(1, '指令 ID 不能为空'),
+  title: z.string().trim().min(1, '请输入指令标题').max(64, '指令标题不能超过 64 个字符'),
+  command: z.string().trim().min(1, '请输入指令内容').max(4000, '指令内容过长'),
+  tags: z.array(z.string().trim().min(1).max(20)).max(12)
+});
+
 export type Step1FormValues = z.infer<typeof step1Schema>;
 export type Step2FormValues = z.infer<typeof step2Schema>;
 export type Step3FormValues = z.infer<typeof step3Schema>;
 export type IdentityFormValues = z.infer<typeof identitySchema>;
+export type SnippetFormValues = z.infer<typeof snippetSchema>;

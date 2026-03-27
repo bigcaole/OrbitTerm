@@ -1,19 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { aiTranslateCommand, type AiTranslateResponse } from '../../services/ai';
 
-interface LoyuAiAssistantProps {
+interface OrbitAiAssistantProps {
   open: boolean;
   sessionId: string | null;
   onClose: () => void;
   onFill: (command: string) => Promise<void>;
 }
 
-export function LoyuAiAssistant({
+export function OrbitAiAssistant({
   open,
   sessionId,
   onClose,
   onFill
-}: LoyuAiAssistantProps): JSX.Element | null {
+}: OrbitAiAssistantProps): JSX.Element | null {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [text, setText] = useState<string>('');
   const [result, setResult] = useState<AiTranslateResponse | null>(null);

@@ -45,7 +45,7 @@ def _render_rgba(size: int) -> bytes:
         for x in range(size):
             nx = x / size_f
 
-            # Deep Loyu blue gradient base.
+            # Deep Orbit blue gradient base.
             base_r = _clamp_u8(6 + 8 * nx + 4 * ny)
             base_g = _clamp_u8(19 + 26 * nx + 6 * (1.0 - ny))
             base_b = _clamp_u8(35 + 48 * nx + 22 * ny)

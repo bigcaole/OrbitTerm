@@ -5,6 +5,7 @@ mod diagnostics;
 #[allow(dead_code)]
 mod e2ee;
 mod error;
+mod key_manager;
 mod models;
 mod ssh;
 mod vault;
@@ -14,9 +15,13 @@ use models::{
     AiExplainSshErrorRequest, AiExplainSshErrorResponse, AiTranslateRequest, AiTranslateResponse,
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HealthCheckResponse,
     SaveVaultRequest, SaveVaultResponse, SftpDownloadRequest, SftpLsRequest, SftpLsResponse,
-    SftpMkdirRequest, SftpRenameRequest, SftpRmRequest, SftpTransferResponse, SftpUploadRequest,
-    SshConnectRequest, SshConnectedResponse, SshDisconnectRequest, SshResizeRequest, SshWriteRequest,
-    UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
+    SftpMkdirRequest, SftpReadTextRequest, SftpReadTextResponse, SftpRenameRequest,
+    SftpRmRequest, SftpTransferResponse, SftpUploadRequest, SshConnectRequest,
+    SshConnectedResponse, SshDerivePublicKeyRequest, SshDerivePublicKeyResponse,
+    SshDeployPublicKeyRequest, SshDisconnectRequest, SshExportPrivateKeyRequest,
+    SshExportPrivateKeyResponse, SshGenerateKeypairRequest, SshGenerateKeypairResponse,
+    SshPulseActivityRequest, SshResizeRequest, SshWriteRequest, UnlockAndLoadRequest,
+    UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
 };
 use ssh::SshSessionRegistry;
 use tauri::{AppHandle, State};
@@ -63,6 +68,51 @@ async fn ssh_disconnect(
 ) -> Result<(), String> {
     registry
         .disconnect(&request.session_id)
+        .await
+        .map_err(|err| err.user_message())
+}
+
+#[tauri::command]
+async fn ssh_set_pulse_activity(
+    registry: State<'_, SshSessionRegistry>,
+    request: SshPulseActivityRequest,
+) -> Result<(), String> {
+    registry
+        .set_pulse_activity(&request.session_id, request.active)
+        .await
+        .map_err(|err| err.user_message())
+}
+
+#[tauri::command]
+fn ssh_generate_keypair(
+    request: SshGenerateKeypairRequest,
+) -> Result<SshGenerateKeypairResponse, String> {
+    key_manager::generate_ssh_keypair(request).map_err(|err| err.user_message())
+}
+
+#[tauri::command]
+fn ssh_derive_public_key(
+    request: SshDerivePublicKeyRequest,
+) -> Result<SshDerivePublicKeyResponse, String> {
+    key_manager::derive_public_key(request).map_err(|err| err.user_message())
+}
+
+#[tauri::command]
+async fn ssh_deploy_public_key(
+    registry: State<'_, SshSessionRegistry>,
+    request: SshDeployPublicKeyRequest,
+) -> Result<(), String> {
+    registry
+        .deploy_public_key(&request.session_id, request.public_key)
+        .await
+        .map_err(|err| err.user_message())
+}
+
+#[tauri::command]
+async fn ssh_export_private_key(
+    request: SshExportPrivateKeyRequest,
+) -> Result<SshExportPrivateKeyResponse, String> {
+    key_manager::export_private_key(request)
         .await
         .map_err(|err| err.user_message())
 }
@@ -141,11 +191,23 @@ async fn sftp_upload(
 
 #[tauri::command]
 async fn sftp_download(
+    app: AppHandle,
     registry: State<'_, SshSessionRegistry>,
     request: SftpDownloadRequest,
 ) -> Result<SftpTransferResponse, String> {
     registry
-        .sftp_download(request)
+        .sftp_download(app, request)
+        .await
+        .map_err(|err| err.user_message())
+}
+
+#[tauri::command]
+async fn sftp_read_text(
+    registry: State<'_, SshSessionRegistry>,
+    request: SftpReadTextRequest,
+) -> Result<SftpReadTextResponse, String> {
+    registry
+        .sftp_read_text(request)
         .await
         .map_err(|err| err.user_message())
 }
@@ -216,6 +278,11 @@ fn main() {
             ssh_write,
             ssh_resize,
             ssh_disconnect,
+            ssh_set_pulse_activity,
+            ssh_generate_keypair,
+            ssh_derive_public_key,
+            ssh_deploy_public_key,
+            ssh_export_private_key,
             ai_translate_command,
             ai_explain_ssh_error,
             sftp_ls,
@@ -224,6 +291,7 @@ fn main() {
             sftp_rename,
             sftp_upload,
             sftp_download,
+            sftp_read_text,
             unlock_and_load,
             save_vault,
             export_encrypted_backup,

@@ -3,11 +3,12 @@ import { toast } from 'sonner';
 import {
   finalHostSchema,
   identitySchema,
+  snippetSchema,
   type Step1FormValues,
   type Step2FormValues,
   type Step3FormValues
 } from '../schemas/hostSchemas';
-import type { HostConfig, IdentityConfig } from '../types/host';
+import type { HostConfig, IdentityConfig, Snippet } from '../types/host';
 import {
   clearVaultSession,
   exportVaultSyncBlob,
@@ -16,12 +17,18 @@ import {
   unlockAndLoad
 } from '../services/vault';
 import {
+  CloudSyncConflictError,
   clearCloudSyncSession,
+  getCloudSyncStatus,
+  listCloudDevices,
   loginCloudSync,
+  logoutAllCloudDevices,
+  logoutCloudDevice,
   pullCloudSyncBlob,
   pushCloudSyncBlob,
   readCloudSyncSession,
   registerCloudSync,
+  type CloudDeviceItem,
   type CloudSyncSession
 } from '../services/cloudSync';
 import { type ProxyJumpHop, sshConnect, sshDisconnect } from '../services/ssh';
@@ -42,6 +49,7 @@ export interface HostEditPayload {
     address: string;
     port: number;
     description: string;
+    tagsText: string;
   };
   identity: {
     name: string;
@@ -54,6 +62,7 @@ interface HostState {
   appView: AppView;
   hosts: HostConfig[];
   identities: IdentityConfig[];
+  snippets: Snippet[];
   vaultVersion: number | null;
   vaultUpdatedAt: number | null;
   isUnlocking: boolean;
@@ -61,6 +70,10 @@ interface HostState {
   isSavingVault: boolean;
   saveError: string | null;
   cloudSyncSession: CloudSyncSession | null;
+  cloudSyncVersion: number | null;
+  cloudSyncLastAt: string | null;
+  cloudDevices: CloudDeviceItem[];
+  isLoadingCloudDevices: boolean;
   isSyncingCloud: boolean;
   cloudSyncError: string | null;
   activeSessions: TerminalSession[];
@@ -77,14 +90,29 @@ interface HostState {
   registerCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
   loginCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
   logoutCloudAccount: () => void;
+  loadCloudDevices: () => Promise<void>;
+  revokeCloudDevice: (deviceId: string) => Promise<void>;
+  revokeAllCloudDevices: () => Promise<void>;
   syncPushToCloud: () => Promise<void>;
   syncPullFromCloud: () => Promise<void>;
   setHosts: (hosts: HostConfig[]) => void;
   setIdentities: (identities: IdentityConfig[]) => void;
+  addIdentity: (payload: {
+    name: string;
+    username: string;
+    authConfig: Step2FormValues;
+  }) => Promise<IdentityConfig>;
+  addSnippet: (payload: { title: string; command: string; tags: string[] }) => Promise<void>;
+  updateSnippet: (
+    snippetId: string,
+    payload: { title: string; command: string; tags: string[] }
+  ) => Promise<void>;
+  deleteSnippet: (snippetId: string) => Promise<void>;
   updateHostAndIdentity: (hostId: string, payload: HostEditPayload) => Promise<void>;
   deleteHost: (hostId: string) => Promise<void>;
   updateIdentity: (identity: IdentityConfig) => Promise<void>;
   switchView: (view: AppView) => void;
+  openDetachedSession: (hostId: string) => Promise<TerminalSession>;
   openTerminal: (host: HostConfig) => Promise<boolean>;
   openNewTab: () => Promise<void>;
   setActiveSession: (sessionId: string) => void;
@@ -321,12 +349,45 @@ const createIdentityId = (): string => {
   return `identity-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 };
 
+const createSnippetId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `snippet-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+};
+
 const initialCloudSyncSession = readCloudSyncSession();
+const CLOUD_PUSH_DEBOUNCE_MS = 800;
+
+let cloudSyncQueue: Promise<void> = Promise.resolve();
+let cloudPushDebounceTimer: number | null = null;
+
+const enqueueCloudSyncTask = <T>(task: () => Promise<T>): Promise<T> => {
+  const next = cloudSyncQueue.then(task, task);
+  cloudSyncQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+};
+
+const scheduleCloudPush = (getState: () => HostState): void => {
+  if (cloudPushDebounceTimer !== null) {
+    window.clearTimeout(cloudPushDebounceTimer);
+  }
+
+  cloudPushDebounceTimer = window.setTimeout(() => {
+    cloudPushDebounceTimer = null;
+    void getState().syncPushToCloud();
+  }, CLOUD_PUSH_DEBOUNCE_MS);
+};
 
 export const useHostStore = create<HostState>((set, get) => ({
   appView: 'locked',
   hosts: [],
   identities: [],
+  snippets: [],
   vaultVersion: null,
   vaultUpdatedAt: null,
   isUnlocking: false,
@@ -334,6 +395,10 @@ export const useHostStore = create<HostState>((set, get) => ({
   isSavingVault: false,
   saveError: null,
   cloudSyncSession: initialCloudSyncSession,
+  cloudSyncVersion: null,
+  cloudSyncLastAt: null,
+  cloudDevices: [],
+  isLoadingCloudDevices: false,
   isSyncingCloud: false,
   cloudSyncError: null,
   activeSessions: [],
@@ -358,6 +423,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       set({
         hosts: response.hosts,
         identities: response.identities,
+        snippets: response.snippets,
         vaultVersion: response.version,
         vaultUpdatedAt: response.updatedAt,
         appView: 'dashboard',
@@ -368,11 +434,15 @@ export const useHostStore = create<HostState>((set, get) => ({
         terminalError: null,
         saveError: null,
         cloudSyncSession: cloudSession,
+        cloudSyncVersion: null,
+        cloudSyncLastAt: null,
+        cloudDevices: [],
+        isLoadingCloudDevices: false,
         cloudSyncError: null
       });
 
       if (cloudSession) {
-        void get().syncPullFromCloud();
+        void Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
       }
     } catch (error) {
       const fallback = '解锁失败，请检查主密码后重试。';
@@ -381,12 +451,21 @@ export const useHostStore = create<HostState>((set, get) => ({
         isUnlocking: false,
         appView: 'locked',
         unlockError: message || fallback,
+        snippets: [],
         vaultVersion: null,
-        vaultUpdatedAt: null
+        vaultUpdatedAt: null,
+        cloudSyncVersion: null,
+        cloudSyncLastAt: null,
+        cloudDevices: [],
+        isLoadingCloudDevices: false
       });
     }
   },
   lockVault: async () => {
+    if (cloudPushDebounceTimer !== null) {
+      window.clearTimeout(cloudPushDebounceTimer);
+      cloudPushDebounceTimer = null;
+    }
     const state = get();
     const sessions = [...state.activeSessions];
     for (const session of sessions) {
@@ -406,8 +485,13 @@ export const useHostStore = create<HostState>((set, get) => ({
       appView: 'locked',
       hosts: [],
       identities: [],
+      snippets: [],
       vaultVersion: null,
       vaultUpdatedAt: null,
+      cloudSyncVersion: null,
+      cloudSyncLastAt: null,
+      cloudDevices: [],
+      isLoadingCloudDevices: false,
       activeSessions: [],
       activeSessionId: null,
       terminalError: null,
@@ -426,11 +510,15 @@ export const useHostStore = create<HostState>((set, get) => ({
       const session = await registerCloudSync(apiBaseUrl, email, password);
       set({
         cloudSyncSession: session,
+        cloudSyncVersion: null,
+        cloudSyncLastAt: null,
+        cloudDevices: [],
+        isLoadingCloudDevices: false,
         isSyncingCloud: false,
         cloudSyncError: null
       });
       if (get().appView === 'dashboard') {
-        await get().syncPullFromCloud();
+        await Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
       }
       toast.success('私有云账号注册成功');
     } catch (error) {
@@ -449,11 +537,15 @@ export const useHostStore = create<HostState>((set, get) => ({
       const session = await loginCloudSync(apiBaseUrl, email, password);
       set({
         cloudSyncSession: session,
+        cloudSyncVersion: null,
+        cloudSyncLastAt: null,
+        cloudDevices: [],
+        isLoadingCloudDevices: false,
         isSyncingCloud: false,
         cloudSyncError: null
       });
       if (get().appView === 'dashboard') {
-        await get().syncPullFromCloud();
+        await Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
       }
       toast.success('私有云同步已连接');
     } catch (error) {
@@ -470,90 +562,427 @@ export const useHostStore = create<HostState>((set, get) => ({
     clearCloudSyncSession();
     set({
       cloudSyncSession: null,
+      cloudSyncVersion: null,
+      cloudSyncLastAt: null,
+      cloudDevices: [],
+      isLoadingCloudDevices: false,
       cloudSyncError: null
     });
   },
-  syncPushToCloud: async () => {
+  loadCloudDevices: async () => {
     const state = get();
     const session = state.cloudSyncSession ?? readCloudSyncSession();
     if (!session || state.appView !== 'dashboard') {
       return;
     }
 
-    set({ isSyncingCloud: true, cloudSyncError: null });
+    set({ isLoadingCloudDevices: true, cloudSyncError: null });
     try {
-      const localBlob = await exportVaultSyncBlob();
-      await pushCloudSyncBlob(session, {
-        version: localBlob.version,
-        encryptedBlobBase64: localBlob.encryptedBlobBase64
-      });
+      const devices = await listCloudDevices(session);
       set({
         cloudSyncSession: session,
-        vaultVersion: localBlob.version,
-        vaultUpdatedAt: localBlob.updatedAt,
-        isSyncingCloud: false,
+        cloudDevices: devices,
+        isLoadingCloudDevices: false,
         cloudSyncError: null
       });
     } catch (error) {
-      const fallback = '自动上传云端失败。';
+      const fallback = '加载设备列表失败，请稍后重试。';
       const message = error instanceof Error ? error.message : fallback;
       set({
-        isSyncingCloud: false,
+        isLoadingCloudDevices: false,
         cloudSyncError: message || fallback
       });
     }
   },
-  syncPullFromCloud: async () => {
+  revokeCloudDevice: async (deviceId) => {
     const state = get();
     const session = state.cloudSyncSession ?? readCloudSyncSession();
     if (!session || state.appView !== 'dashboard') {
-      return;
+      throw new Error('请先登录同步账号。');
     }
 
-    set({ isSyncingCloud: true, cloudSyncError: null });
+    set({ isLoadingCloudDevices: true, cloudSyncError: null });
     try {
-      const remote = await pullCloudSyncBlob(session);
-      if (!remote.hasData || !remote.encryptedBlobBase64 || typeof remote.version !== 'number') {
+      const isCurrentTarget = state.cloudDevices.some(
+        (device) => device.id === deviceId && device.isCurrent
+      );
+      await logoutCloudDevice(session, deviceId);
+      if (isCurrentTarget) {
+        clearCloudSyncSession();
         set({
-          cloudSyncSession: session,
-          isSyncingCloud: false,
+          cloudSyncSession: null,
+          cloudSyncVersion: null,
+          cloudSyncLastAt: null,
+          cloudDevices: [],
+          isLoadingCloudDevices: false,
           cloudSyncError: null
         });
+        toast.message('当前设备已退出云同步登录。');
         return;
       }
 
-      const localVersion = get().vaultVersion ?? 0;
-      if (remote.version <= localVersion) {
-        set({
-          cloudSyncSession: session,
-          isSyncingCloud: false,
-          cloudSyncError: null
-        });
-        return;
-      }
-
-      const imported = await importVaultSyncBlob(remote.encryptedBlobBase64);
+      const devices = await listCloudDevices(session);
       set({
         cloudSyncSession: session,
-        hosts: imported.hosts,
-        identities: imported.identities,
-        vaultVersion: imported.version,
-        vaultUpdatedAt: imported.updatedAt,
-        isSyncingCloud: false,
+        cloudDevices: devices,
+        isLoadingCloudDevices: false,
         cloudSyncError: null
       });
-      toast.success(`已从私有云同步到 v${imported.version}`);
+      toast.success('设备已退出登录。');
     } catch (error) {
-      const fallback = '自动拉取云端失败。';
+      const fallback = '退出设备失败，请稍后重试。';
       const message = error instanceof Error ? error.message : fallback;
       set({
-        isSyncingCloud: false,
+        isLoadingCloudDevices: false,
         cloudSyncError: message || fallback
       });
+      throw new Error(message || fallback);
     }
+  },
+  revokeAllCloudDevices: async () => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      throw new Error('请先登录同步账号。');
+    }
+
+    set({ isLoadingCloudDevices: true, cloudSyncError: null });
+    try {
+      await logoutAllCloudDevices(session);
+      clearCloudSyncSession();
+      set({
+        cloudSyncSession: null,
+        cloudSyncVersion: null,
+        cloudSyncLastAt: null,
+        cloudDevices: [],
+        isLoadingCloudDevices: false,
+        cloudSyncError: null
+      });
+      toast.success('已退出所有设备。');
+    } catch (error) {
+      const fallback = '退出所有设备失败，请稍后重试。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isLoadingCloudDevices: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
+  },
+  syncPushToCloud: async () => {
+    return enqueueCloudSyncTask(async () => {
+      const state = get();
+      const session = state.cloudSyncSession ?? readCloudSyncSession();
+      if (!session || state.appView !== 'dashboard') {
+        return;
+      }
+
+      set({ isSyncingCloud: true, cloudSyncError: null });
+      try {
+        const localBlob = await exportVaultSyncBlob();
+        const status = await getCloudSyncStatus(session);
+        const pushResult = await pushCloudSyncBlob(session, {
+          version: status.hasData ? status.version : 0,
+          encryptedBlobBase64: localBlob.encryptedBlobBase64
+        });
+        set({
+          cloudSyncSession: session,
+          cloudSyncVersion: pushResult.acceptedVersion,
+          cloudSyncLastAt: pushResult.updatedAt,
+          vaultVersion: localBlob.version,
+          vaultUpdatedAt: localBlob.updatedAt,
+          isSyncingCloud: false,
+          cloudSyncError: null
+        });
+      } catch (error) {
+        if (error instanceof CloudSyncConflictError) {
+          const latest = error.latest;
+          if (latest?.hasData && latest.encryptedBlobBase64 && typeof latest.version === 'number') {
+            try {
+              const imported = await importVaultSyncBlob(latest.encryptedBlobBase64);
+              set({
+                cloudSyncSession: session,
+                cloudSyncVersion: latest.version,
+                cloudSyncLastAt: latest.updatedAt ?? null,
+                hosts: imported.hosts,
+                identities: imported.identities,
+                snippets: imported.snippets,
+                vaultVersion: imported.version,
+                vaultUpdatedAt: imported.updatedAt,
+                isSyncingCloud: false,
+                cloudSyncError: null
+              });
+              toast.message('检测到云端有更新，已自动合并至最新版本。');
+              return;
+            } catch (importError) {
+              const fallback = '云端冲突恢复失败，请手动执行拉取。';
+              const message = importError instanceof Error ? importError.message : fallback;
+              set({
+                isSyncingCloud: false,
+                cloudSyncError: message || fallback
+              });
+              return;
+            }
+          }
+        }
+        const fallback = '自动上传云端失败。';
+        const message = error instanceof Error ? error.message : fallback;
+        set({
+          isSyncingCloud: false,
+          cloudSyncError: message || fallback
+        });
+      }
+    });
+  },
+  syncPullFromCloud: async () => {
+    return enqueueCloudSyncTask(async () => {
+      const state = get();
+      const session = state.cloudSyncSession ?? readCloudSyncSession();
+      if (!session || state.appView !== 'dashboard') {
+        return;
+      }
+
+      set({ isSyncingCloud: true, cloudSyncError: null });
+      try {
+        const status = await getCloudSyncStatus(session);
+        if (!status.hasData) {
+          set({
+            cloudSyncSession: session,
+            cloudSyncVersion: 0,
+            cloudSyncLastAt: status.updatedAt ?? null,
+            isSyncingCloud: false,
+            cloudSyncError: null
+          });
+          return;
+        }
+
+        const localCloudVersion = get().cloudSyncVersion ?? 0;
+        if (status.version <= localCloudVersion) {
+          set({
+            cloudSyncSession: session,
+            cloudSyncVersion: status.version,
+            cloudSyncLastAt: status.updatedAt ?? get().cloudSyncLastAt,
+            isSyncingCloud: false,
+            cloudSyncError: null
+          });
+          return;
+        }
+
+        const remote = await pullCloudSyncBlob(session);
+        if (!remote.hasData || !remote.encryptedBlobBase64 || typeof remote.version !== 'number') {
+          set({
+            cloudSyncSession: session,
+            cloudSyncVersion: status.version,
+            cloudSyncLastAt: status.updatedAt ?? get().cloudSyncLastAt,
+            isSyncingCloud: false,
+            cloudSyncError: null
+          });
+          return;
+        }
+
+        if (remote.version <= localCloudVersion) {
+          set({
+            cloudSyncSession: session,
+            cloudSyncVersion: remote.version,
+            cloudSyncLastAt: remote.updatedAt ?? status.updatedAt ?? get().cloudSyncLastAt,
+            isSyncingCloud: false,
+            cloudSyncError: null
+          });
+          return;
+        }
+
+        const imported = await importVaultSyncBlob(remote.encryptedBlobBase64);
+        set({
+          cloudSyncSession: session,
+          cloudSyncVersion: remote.version,
+          cloudSyncLastAt: remote.updatedAt ?? status.updatedAt ?? get().cloudSyncLastAt,
+          hosts: imported.hosts,
+          identities: imported.identities,
+          snippets: imported.snippets,
+          vaultVersion: imported.version,
+          vaultUpdatedAt: imported.updatedAt,
+          isSyncingCloud: false,
+          cloudSyncError: null
+        });
+        toast.success(`已从私有云同步到 v${imported.version}`);
+      } catch (error) {
+        const fallback = '自动拉取云端失败。';
+        const message = error instanceof Error ? error.message : fallback;
+        set({
+          isSyncingCloud: false,
+          cloudSyncError: message || fallback
+        });
+      }
+    });
   },
   setHosts: (hosts) => set({ hosts }),
   setIdentities: (identities) => set({ identities }),
+  addIdentity: async (payload) => {
+    const state = get();
+    const normalizedName = payload.name.trim();
+    const normalizedUsername = payload.username.trim();
+    const nextIdentity: IdentityConfig = identitySchema.parse({
+      id: createIdentityId(),
+      name: normalizedName || `${normalizedUsername}@identity`,
+      username: normalizedUsername,
+      authConfig: payload.authConfig
+    });
+    const nextIdentities = [...state.identities, nextIdentity];
+
+    set({
+      identities: nextIdentities,
+      isSavingVault: true,
+      saveError: null
+    });
+
+    try {
+      const saveResult = await saveVault(state.hosts, nextIdentities, state.snippets);
+      set({
+        isSavingVault: false,
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
+      });
+      scheduleCloudPush(get);
+      toast.success(`已新增身份：${nextIdentity.name}`);
+      return nextIdentity;
+    } catch (error) {
+      const fallback = '身份已添加到当前会话，但写入本地金库失败。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSavingVault: false,
+        saveError: message || fallback
+      });
+      toast.error(message || fallback);
+      throw new Error(message || fallback);
+    }
+  },
+  addSnippet: async (payload) => {
+    const state = get();
+    const normalizedTags = Array.from(
+      new Set(
+        payload.tags
+          .map((item) => item.trim())
+          .filter(Boolean)
+      )
+    );
+    const snippet: Snippet = snippetSchema.parse({
+      id: createSnippetId(),
+      title: payload.title,
+      command: payload.command,
+      tags: normalizedTags
+    });
+
+    const nextSnippets = [...state.snippets, snippet];
+    set({
+      snippets: nextSnippets,
+      isSavingVault: true,
+      saveError: null
+    });
+
+    try {
+      const saveResult = await saveVault(state.hosts, state.identities, nextSnippets);
+      set({
+        isSavingVault: false,
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
+      });
+      scheduleCloudPush(get);
+      toast.success(`已添加指令：${snippet.title}`);
+    } catch (error) {
+      const fallback = '指令已添加到当前会话，但写入本地金库失败。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSavingVault: false,
+        saveError: message || fallback
+      });
+      toast.error(message || fallback);
+    }
+  },
+  updateSnippet: async (snippetId, payload) => {
+    const state = get();
+    const target = state.snippets.find((item) => item.id === snippetId);
+    if (!target) {
+      throw new Error('未找到要更新的指令片段。');
+    }
+
+    const normalizedTags = Array.from(
+      new Set(
+        payload.tags
+          .map((item) => item.trim())
+          .filter(Boolean)
+      )
+    );
+
+    const nextSnippet: Snippet = snippetSchema.parse({
+      id: target.id,
+      title: payload.title,
+      command: payload.command,
+      tags: normalizedTags
+    });
+    const nextSnippets = state.snippets.map((item) => (item.id === target.id ? nextSnippet : item));
+
+    set({
+      snippets: nextSnippets,
+      isSavingVault: true,
+      saveError: null
+    });
+
+    try {
+      const saveResult = await saveVault(state.hosts, state.identities, nextSnippets);
+      set({
+        isSavingVault: false,
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
+      });
+      scheduleCloudPush(get);
+      toast.success(`已更新指令：${nextSnippet.title}`);
+    } catch (error) {
+      const fallback = '指令已更新到当前会话，但写入本地金库失败。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSavingVault: false,
+        saveError: message || fallback
+      });
+      toast.error(message || fallback);
+    }
+  },
+  deleteSnippet: async (snippetId) => {
+    const state = get();
+    const target = state.snippets.find((item) => item.id === snippetId);
+    if (!target) {
+      throw new Error('未找到要删除的指令片段。');
+    }
+
+    const nextSnippets = state.snippets.filter((item) => item.id !== snippetId);
+    set({
+      snippets: nextSnippets,
+      isSavingVault: true,
+      saveError: null
+    });
+
+    try {
+      const saveResult = await saveVault(state.hosts, state.identities, nextSnippets);
+      set({
+        isSavingVault: false,
+        saveError: null,
+        vaultVersion: saveResult.version,
+        vaultUpdatedAt: saveResult.updatedAt
+      });
+      scheduleCloudPush(get);
+      toast.success(`已删除指令：${target.title}`);
+    } catch (error) {
+      const fallback = '指令已从当前会话移除，但写入本地金库失败。';
+      const message = error instanceof Error ? error.message : fallback;
+      set({
+        isSavingVault: false,
+        saveError: message || fallback
+      });
+      toast.error(message || fallback);
+    }
+  },
   updateHostAndIdentity: async (hostId, payload) => {
     const state = get();
     const hostIndex = state.hosts.findIndex((item) => buildHostId(item) === hostId);
@@ -575,6 +1004,7 @@ export const useHostStore = create<HostState>((set, get) => ({
     const normalizedName =
       payload.basicInfo.name.trim() || `${normalizedAddress}:${normalizedPort}`;
     const normalizedDescription = payload.basicInfo.description.trim();
+    const nextTags = parseTags(payload.basicInfo.tagsText);
 
     const updatedHost: HostConfig = finalHostSchema.parse({
       basicInfo: {
@@ -584,7 +1014,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         description: normalizedDescription
       },
       identityId: currentHost.identityId,
-      advancedOptions: currentHost.advancedOptions
+      advancedOptions: {
+        ...currentHost.advancedOptions,
+        tags: nextTags
+      }
     });
 
     const normalizedIdentityUsername = payload.identity.username.trim();
@@ -624,14 +1057,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
 
     try {
-      const saveResult = await saveVault(nextHosts, nextIdentities);
+      const saveResult = await saveVault(nextHosts, nextIdentities, state.snippets);
       set({
         isSavingVault: false,
         saveError: null,
         vaultVersion: saveResult.version,
         vaultUpdatedAt: saveResult.updatedAt
       });
-      void get().syncPushToCloud();
+      scheduleCloudPush(get);
       toast.success('主机信息已更新', {
         description: '更改已写入本地加密金库。'
       });
@@ -685,14 +1118,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
 
     try {
-      const saveResult = await saveVault(nextHosts, nextIdentities);
+      const saveResult = await saveVault(nextHosts, nextIdentities, state.snippets);
       set({
         isSavingVault: false,
         saveError: null,
         vaultVersion: saveResult.version,
         vaultUpdatedAt: saveResult.updatedAt
       });
-      void get().syncPushToCloud();
+      scheduleCloudPush(get);
       toast.success(`已删除主机：${targetHost.basicInfo.name}`);
     } catch (error) {
       const fallback = '主机已从当前界面移除，但写入本地金库失败。';
@@ -711,14 +1144,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     );
     set({ identities: nextIdentities, isSavingVault: true, saveError: null });
     try {
-      const saveResult = await saveVault(state.hosts, nextIdentities);
+      const saveResult = await saveVault(state.hosts, nextIdentities, state.snippets);
       set({
         isSavingVault: false,
         saveError: null,
         vaultVersion: saveResult.version,
         vaultUpdatedAt: saveResult.updatedAt
       });
-      void get().syncPushToCloud();
+      scheduleCloudPush(get);
     } catch (error) {
       const fallback = '身份更新已应用到当前会话，但写入本地金库失败。';
       const message = error instanceof Error ? error.message : fallback;
@@ -726,6 +1159,26 @@ export const useHostStore = create<HostState>((set, get) => ({
     }
   },
   switchView: (view) => set({ appView: view }),
+  openDetachedSession: async (hostId) => {
+    const state = get();
+    const host = state.hosts.find((item) => buildHostId(item) === hostId);
+    if (!host) {
+      throw new Error('未找到对应主机，无法创建分屏会话。');
+    }
+    const identity = state.identities.find((item) => item.id === host.identityId);
+    if (!identity) {
+      throw new Error('未找到主机关联身份，请检查身份配置后重试。');
+    }
+
+    const proxyChain = buildProxyChain(host, identity, state.hosts, state.identities);
+    const response = await sshConnect(host, identity, proxyChain);
+    const title = host.basicInfo.name || `${host.basicInfo.address}:${host.basicInfo.port}`;
+    return {
+      id: response.sessionId,
+      title,
+      hostId
+    };
+  },
   openTerminal: async (host) => {
     set({ isConnectingTerminal: true, terminalError: null });
     try {
@@ -941,14 +1394,14 @@ export const useHostStore = create<HostState>((set, get) => ({
     });
 
     try {
-      const saveResult = await saveVault(nextHosts, nextIdentities);
+      const saveResult = await saveVault(nextHosts, nextIdentities, state.snippets);
       set({
         isSavingVault: false,
         saveError: null,
         vaultVersion: saveResult.version,
         vaultUpdatedAt: saveResult.updatedAt
       });
-      void get().syncPushToCloud();
+      scheduleCloudPush(get);
       toast.success('主机配置已保存到金库', {
         description: '本地加密文件已更新。'
       });

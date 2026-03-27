@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use russh::client;
 use russh::keys::{decode_openssh, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, Disconnect};
@@ -10,17 +12,18 @@ use russh_sftp::client::{error::Error as SftpError, SftpSession};
 use russh_sftp::protocol::{FileType, OpenFlags, StatusCode};
 use tauri::{AppHandle, Manager};
 use tokio::fs as tokio_fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout, Instant};
 use uuid::Uuid;
 
 use crate::error::{map_russh_error, SshBackendError, SshResult};
 use crate::models::{
     AuthMethod, SftpDownloadRequest, SftpEntry, SftpLsRequest, SftpLsResponse, SftpMkdirRequest,
-    SftpRenameRequest, SftpRmRequest, SftpTransferProgressEvent, SftpTransferResponse,
-    SftpUploadRequest, SshClosedEvent, SshConnectRequest, SshConnectedResponse,
-    SshDiagnosticLogEvent, SshErrorEvent, SshOutputEvent,
+    SftpReadTextRequest, SftpReadTextResponse, SftpRenameRequest, SftpRmRequest,
+    SftpTransferProgressEvent, SftpTransferResponse, SftpUploadRequest, SshClosedEvent,
+    SshConnectRequest, SshConnectedResponse, SshDiagnosticLogEvent, SshErrorEvent, SshOutputEvent,
+    SshSysStatusEvent, SysStatus,
 };
 
 #[derive(Debug)]
@@ -35,6 +38,7 @@ struct SessionEntry {
     command_tx: mpsc::Sender<SessionCommand>,
     handle: Arc<Mutex<client::Handle<ClientHandler>>>,
     tunnel_handles: Vec<Arc<Mutex<client::Handle<ClientHandler>>>>,
+    pulse_active: Arc<RwLock<bool>>,
 }
 
 #[derive(Clone, Default)]
@@ -152,6 +156,7 @@ impl SshSessionRegistry {
             .map_err(|err| map_russh_error(&err))?;
 
         let (command_tx, mut command_rx) = mpsc::channel::<SessionCommand>(512);
+        let pulse_active = Arc::new(RwLock::new(true));
 
         {
             let mut sessions = self.sessions.write().await;
@@ -161,9 +166,20 @@ impl SshSessionRegistry {
                     command_tx: command_tx.clone(),
                     handle: handle_ref.clone(),
                     tunnel_handles: tunnel_handles.clone(),
+                    pulse_active: pulse_active.clone(),
                 },
             );
         }
+
+        let monitor_registry = self.clone();
+        let monitor_app = app.clone();
+        let monitor_session_id = session_id.clone();
+        let monitor_handle = handle_ref.clone();
+        tokio::spawn(async move {
+            monitor_registry
+                .run_sys_status_monitor(monitor_app, monitor_session_id, monitor_handle, pulse_active)
+                .await;
+        });
 
         let registry = self.clone();
         let app_for_loop = app.clone();
@@ -298,6 +314,35 @@ impl SshSessionRegistry {
         Err(SshBackendError::ChannelClosed)
     }
 
+    pub async fn set_pulse_activity(&self, session_id: &str, active: bool) -> SshResult<()> {
+        let entry = self.get_entry(session_id).await?;
+        let mut guard = entry.pulse_active.write().await;
+        *guard = active;
+        Ok(())
+    }
+
+    pub async fn deploy_public_key(
+        &self,
+        session_id: &str,
+        public_key: String,
+    ) -> SshResult<()> {
+        let command = crate::key_manager::build_deploy_command(public_key.as_str())
+            .map_err(|err| SshBackendError::RemoteCommand(err.user_message()))?;
+        let (status, stdout, stderr) = self.exec_command(session_id, command.as_str(), 15).await?;
+        if status == 0 {
+            return Ok(());
+        }
+
+        let detail = if !stderr.trim().is_empty() {
+            stderr
+        } else if !stdout.trim().is_empty() {
+            stdout
+        } else {
+            format!("远端返回状态码 {status}")
+        };
+        Err(SshBackendError::RemoteCommand(detail))
+    }
+
     pub async fn sftp_ls(&self, request: SftpLsRequest) -> SshResult<SftpLsResponse> {
         let target_path = if request.path.trim().is_empty() {
             ".".to_string()
@@ -406,6 +451,7 @@ impl SshSessionRegistry {
 
     pub async fn sftp_download(
         &self,
+        app: AppHandle,
         request: SftpDownloadRequest,
     ) -> SshResult<SftpTransferResponse> {
         if request.remote_path.trim().is_empty() || request.local_path.trim().is_empty() {
@@ -418,18 +464,72 @@ impl SshSessionRegistry {
             .await
             .map_err(map_sftp_error)?;
 
+        let remote_meta = sftp
+            .metadata(request.remote_path.clone())
+            .await
+            .map_err(map_sftp_error)?;
+        let total_size = remote_meta.len();
+        let requested_resume = request.resume_from.unwrap_or(0).min(total_size);
+        let local_existing = match tokio_fs::metadata(request.local_path.clone()).await {
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        };
+        let start_offset = requested_resume.min(local_existing);
+
+        if start_offset > 0 {
+            remote_file
+                .seek(SeekFrom::Start(start_offset))
+                .await
+                .map_err(|err| {
+                    SshBackendError::SftpOperation(format!("定位远端下载偏移失败：{err}"))
+                })?;
+        }
+
         if let Some(parent) = Path::new(request.local_path.as_str()).parent() {
             tokio_fs::create_dir_all(parent).await.map_err(|err| {
                 SshBackendError::SftpOperation(format!("创建本地目录失败：{err}"))
             })?;
         }
 
-        let mut local_file = tokio_fs::File::create(request.local_path.clone())
-            .await
-            .map_err(|err| SshBackendError::SftpOperation(format!("创建本地文件失败：{err}")))?;
+        let mut local_file = if start_offset > 0 {
+            tokio_fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(request.local_path.clone())
+                .await
+                .map_err(|err| SshBackendError::SftpOperation(format!("打开本地文件失败：{err}")))?
+        } else {
+            tokio_fs::File::create(request.local_path.clone())
+                .await
+                .map_err(|err| SshBackendError::SftpOperation(format!("创建本地文件失败：{err}")))?
+        };
 
-        let mut copied: u64 = 0;
+        let mut copied: u64 = start_offset;
         let mut buffer = vec![0_u8; 64 * 1024];
+        let mut emitted_progress: u8 = if total_size == 0 {
+            0
+        } else {
+            ((copied.saturating_mul(100) / total_size).min(100)) as u8
+        };
+        let transfer_id = request
+            .transfer_id
+            .clone()
+            .unwrap_or_else(|| format!("download:{}:{}", request.local_path, request.remote_path));
+
+        let _ = app.emit_all(
+            "sftp-transfer-progress",
+            SftpTransferProgressEvent {
+                session_id: request.session_id.clone(),
+                transfer_id: transfer_id.clone(),
+                direction: "download".to_string(),
+                remote_path: request.remote_path.clone(),
+                local_path: request.local_path.clone(),
+                transferred_bytes: copied,
+                total_bytes: total_size,
+                progress: emitted_progress,
+            },
+        );
+
         loop {
             let read_len = remote_file.read(&mut buffer).await.map_err(|err| {
                 SshBackendError::SftpOperation(format!("读取远端文件失败：{err}"))
@@ -445,6 +545,28 @@ impl SshSessionRegistry {
                     SshBackendError::SftpOperation(format!("写入本地文件失败：{err}"))
                 })?;
             copied = copied.saturating_add(read_len as u64);
+
+            let progress = if total_size == 0 {
+                100
+            } else {
+                ((copied.saturating_mul(100) / total_size).min(100)) as u8
+            };
+            if progress != emitted_progress {
+                emitted_progress = progress;
+                let _ = app.emit_all(
+                    "sftp-transfer-progress",
+                    SftpTransferProgressEvent {
+                        session_id: request.session_id.clone(),
+                        transfer_id: transfer_id.clone(),
+                        direction: "download".to_string(),
+                        remote_path: request.remote_path.clone(),
+                        local_path: request.local_path.clone(),
+                        transferred_bytes: copied,
+                        total_bytes: total_size,
+                        progress,
+                    },
+                );
+            }
         }
 
         local_file
@@ -452,10 +574,78 @@ impl SshSessionRegistry {
             .await
             .map_err(|err| SshBackendError::SftpOperation(format!("刷新本地文件失败：{err}")))?;
 
+        if emitted_progress < 100 {
+            let _ = app.emit_all(
+                "sftp-transfer-progress",
+                SftpTransferProgressEvent {
+                    session_id: request.session_id.clone(),
+                    transfer_id: transfer_id,
+                    direction: "download".to_string(),
+                    remote_path: request.remote_path.clone(),
+                    local_path: request.local_path.clone(),
+                    transferred_bytes: copied,
+                    total_bytes: total_size,
+                    progress: 100,
+                },
+            );
+        }
+
         let _ = sftp.close().await;
         Ok(SftpTransferResponse {
             path: request.local_path,
             bytes: copied,
+            total_bytes: total_size,
+        })
+    }
+
+    pub async fn sftp_read_text(
+        &self,
+        request: SftpReadTextRequest,
+    ) -> SshResult<SftpReadTextResponse> {
+        if request.remote_path.trim().is_empty() {
+            return Err(SshBackendError::InvalidInput);
+        }
+
+        let max_bytes = request.max_bytes.unwrap_or(2 * 1024 * 1024).clamp(1, 8 * 1024 * 1024);
+        let sftp = self.open_sftp_session(&request.session_id).await?;
+        let mut remote_file = sftp
+            .open(request.remote_path.clone())
+            .await
+            .map_err(map_sftp_error)?;
+
+        let mut bytes: Vec<u8> = Vec::with_capacity(max_bytes.min(256 * 1024));
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut truncated = false;
+        loop {
+            let read_len = remote_file.read(&mut buffer).await.map_err(|err| {
+                SshBackendError::SftpOperation(format!("读取远端文件失败：{err}"))
+            })?;
+            if read_len == 0 {
+                break;
+            }
+
+            let remaining = max_bytes.saturating_sub(bytes.len());
+            if remaining == 0 {
+                truncated = true;
+                break;
+            }
+
+            let to_take = remaining.min(read_len);
+            bytes.extend_from_slice(&buffer[..to_take]);
+            if to_take < read_len {
+                truncated = true;
+                break;
+            }
+        }
+
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        let _ = sftp.close().await;
+
+        Ok(SftpReadTextResponse {
+            path: request.remote_path,
+            content,
+            bytes: bytes.len() as u64,
+            truncated,
         })
     }
 
@@ -464,93 +654,277 @@ impl SshSessionRegistry {
         app: AppHandle,
         request: SftpUploadRequest,
     ) -> SshResult<SftpTransferResponse> {
-        if request.remote_path.trim().is_empty() || request.local_path.trim().is_empty() {
+        if request.remote_path.trim().is_empty() {
             return Err(SshBackendError::InvalidInput);
         }
 
-        let mut local_file = tokio_fs::File::open(request.local_path.clone())
-            .await
-            .map_err(|err| SshBackendError::SftpOperation(format!("读取本地文件失败：{err}")))?;
-        let metadata = local_file.metadata().await.map_err(|err| {
-            SshBackendError::SftpOperation(format!("读取本地文件信息失败：{err}"))
-        })?;
-        let total_size = metadata.len();
-
         let sftp = self.open_sftp_session(&request.session_id).await?;
-        let mut remote_file = sftp
-            .open_with_flags(
-                request.remote_path.clone(),
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-            )
-            .await
-            .map_err(map_sftp_error)?;
-
-        let mut transferred: u64 = 0;
-        let mut emitted_progress: u8 = 0;
-        let mut buffer = vec![0_u8; 64 * 1024];
-        loop {
-            let read_len = local_file.read(&mut buffer).await.map_err(|err| {
-                SshBackendError::SftpOperation(format!("读取本地文件失败：{err}"))
-            })?;
-            if read_len == 0 {
-                break;
-            }
-
+        let transfer_id = request
+            .transfer_id
+            .clone()
+            .unwrap_or_else(|| format!("upload:{}:{}", request.local_path.clone().unwrap_or_default(), request.remote_path));
+        let (transferred, total_bytes) = if let Some(content_base64) = request.content_base64.clone() {
+            let mut remote_file = sftp
+                .open_with_flags(
+                    request.remote_path.clone(),
+                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                )
+                .await
+                .map_err(map_sftp_error)?;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(content_base64.as_bytes())
+                .map_err(|_| {
+                    SshBackendError::SftpOperation("编辑内容编码错误，请重试。".to_string())
+                })?;
             remote_file
-                .write_all(&buffer[..read_len])
+                .write_all(&decoded)
                 .await
                 .map_err(|err| {
                     SshBackendError::SftpOperation(format!("写入远端文件失败：{err}"))
                 })?;
-            transferred = transferred.saturating_add(read_len as u64);
+            remote_file
+                .shutdown()
+                .await
+                .map_err(|err| SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}")))?;
+            let transferred = decoded.len() as u64;
+            let total_bytes = transferred;
+            let local_path_for_event = request.local_path.clone().unwrap_or_default();
+            let _ = app.emit_all(
+                "sftp-transfer-progress",
+                SftpTransferProgressEvent {
+                    session_id: request.session_id.clone(),
+                    transfer_id: transfer_id.clone(),
+                    direction: "upload".to_string(),
+                    remote_path: request.remote_path.clone(),
+                    local_path: local_path_for_event,
+                    transferred_bytes: transferred,
+                    total_bytes,
+                    progress: 100,
+                },
+            );
+            (transferred, total_bytes)
+        } else {
+            let local_path = request.local_path.clone().ok_or(SshBackendError::InvalidInput)?;
+            if local_path.trim().is_empty() {
+                return Err(SshBackendError::InvalidInput);
+            }
 
-            let progress = if total_size == 0 {
-                100
+            let mut local_file = tokio_fs::File::open(local_path.clone())
+                .await
+                .map_err(|err| SshBackendError::SftpOperation(format!("读取本地文件失败：{err}")))?;
+            let metadata = local_file.metadata().await.map_err(|err| {
+                SshBackendError::SftpOperation(format!("读取本地文件信息失败：{err}"))
+            })?;
+            let total_size = metadata.len();
+            let requested_resume = request.resume_from.unwrap_or(0).min(total_size);
+            let remote_existing = if requested_resume > 0 {
+                match sftp.metadata(request.remote_path.clone()).await {
+                    Ok(metadata) => metadata.len(),
+                    Err(_) => 0,
+                }
             } else {
-                let ratio = (transferred.saturating_mul(100) / total_size).min(100);
-                ratio as u8
+                0
             };
-            if progress != emitted_progress {
-                emitted_progress = progress;
+            let resume_from = requested_resume.min(remote_existing);
+
+            let mut remote_file = sftp
+                .open_with_flags(
+                    request.remote_path.clone(),
+                    if resume_from > 0 {
+                        OpenFlags::CREATE | OpenFlags::WRITE
+                    } else {
+                        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
+                    },
+                )
+                .await
+                .map_err(map_sftp_error)?;
+
+            if resume_from > 0 {
+                remote_file
+                    .seek(SeekFrom::Start(resume_from))
+                    .await
+                    .map_err(|err| {
+                        SshBackendError::SftpOperation(format!("定位远端上传偏移失败：{err}"))
+                    })?;
+                local_file
+                    .seek(SeekFrom::Start(resume_from))
+                    .await
+                    .map_err(|err| {
+                        SshBackendError::SftpOperation(format!("定位本地上传偏移失败：{err}"))
+                    })?;
+            }
+
+            let mut transferred = resume_from;
+            let mut emitted_progress: u8 = if total_size == 0 {
+                0
+            } else {
+                ((transferred.saturating_mul(100) / total_size).min(100)) as u8
+            };
+            let _ = app.emit_all(
+                "sftp-transfer-progress",
+                SftpTransferProgressEvent {
+                    session_id: request.session_id.clone(),
+                    transfer_id: transfer_id.clone(),
+                    direction: "upload".to_string(),
+                    remote_path: request.remote_path.clone(),
+                    local_path: local_path.clone(),
+                    transferred_bytes: transferred,
+                    total_bytes: total_size,
+                    progress: emitted_progress,
+                },
+            );
+            let mut buffer = vec![0_u8; 64 * 1024];
+            loop {
+                let read_len = local_file.read(&mut buffer).await.map_err(|err| {
+                    SshBackendError::SftpOperation(format!("读取本地文件失败：{err}"))
+                })?;
+                if read_len == 0 {
+                    break;
+                }
+
+                remote_file
+                    .write_all(&buffer[..read_len])
+                    .await
+                    .map_err(|err| {
+                        SshBackendError::SftpOperation(format!("写入远端文件失败：{err}"))
+                    })?;
+                transferred = transferred.saturating_add(read_len as u64);
+
+                let progress = if total_size == 0 {
+                    100
+                } else {
+                    let ratio = (transferred.saturating_mul(100) / total_size).min(100);
+                    ratio as u8
+                };
+                if progress != emitted_progress {
+                    emitted_progress = progress;
+                    let _ = app.emit_all(
+                        "sftp-upload-progress",
+                        SftpTransferProgressEvent {
+                            session_id: request.session_id.clone(),
+                            transfer_id: transfer_id.clone(),
+                            direction: "upload".to_string(),
+                            remote_path: request.remote_path.clone(),
+                            local_path: local_path.clone(),
+                            transferred_bytes: transferred,
+                            total_bytes: total_size,
+                            progress,
+                        },
+                    );
+                    let _ = app.emit_all(
+                        "sftp-transfer-progress",
+                        SftpTransferProgressEvent {
+                            session_id: request.session_id.clone(),
+                            transfer_id: transfer_id.clone(),
+                            direction: "upload".to_string(),
+                            remote_path: request.remote_path.clone(),
+                            local_path: local_path.clone(),
+                            transferred_bytes: transferred,
+                            total_bytes: total_size,
+                            progress,
+                        },
+                    );
+                }
+            }
+
+            if emitted_progress < 100 {
                 let _ = app.emit_all(
                     "sftp-upload-progress",
                     SftpTransferProgressEvent {
                         session_id: request.session_id.clone(),
+                        transfer_id: transfer_id.clone(),
+                        direction: "upload".to_string(),
                         remote_path: request.remote_path.clone(),
-                        local_path: request.local_path.clone(),
-                        progress,
+                        local_path,
+                        transferred_bytes: transferred,
+                        total_bytes: total_size,
+                        progress: 100,
+                    },
+                );
+                let _ = app.emit_all(
+                    "sftp-transfer-progress",
+                    SftpTransferProgressEvent {
+                        session_id: request.session_id.clone(),
+                        transfer_id: transfer_id.clone(),
+                        direction: "upload".to_string(),
+                        remote_path: request.remote_path.clone(),
+                        local_path: request.local_path.clone().unwrap_or_default(),
+                        transferred_bytes: transferred,
+                        total_bytes: total_size,
+                        progress: 100,
                     },
                 );
             }
-        }
-
-        remote_file
-            .shutdown()
-            .await
-            .map_err(|err| SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}")))?;
-
-        if emitted_progress < 100 {
-            let _ = app.emit_all(
-                "sftp-upload-progress",
-                SftpTransferProgressEvent {
-                    session_id: request.session_id.clone(),
-                    remote_path: request.remote_path.clone(),
-                    local_path: request.local_path.clone(),
-                    progress: 100,
-                },
-            );
-        }
+            remote_file
+                .shutdown()
+                .await
+                .map_err(|err| SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}")))?;
+            (transferred, total_size)
+        };
 
         let _ = sftp.close().await;
         Ok(SftpTransferResponse {
             path: request.remote_path,
             bytes: transferred,
+            total_bytes: total_bytes.max(transferred),
         })
     }
 
     async fn get_sender(&self, session_id: &str) -> SshResult<mpsc::Sender<SessionCommand>> {
         let entry = self.get_entry(session_id).await?;
         Ok(entry.command_tx)
+    }
+
+    async fn exec_command(
+        &self,
+        session_id: &str,
+        command: &str,
+        timeout_secs: u64,
+    ) -> SshResult<(u32, String, String)> {
+        let entry = self.get_entry(session_id).await?;
+        let mut channel = {
+            let guard = entry.handle.lock().await;
+            guard
+                .channel_open_session()
+                .await
+                .map_err(|err| map_russh_error(&err))?
+        };
+
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|err| map_russh_error(&err))?;
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut exit_status: Option<u32> = None;
+        loop {
+            let message = timeout(Duration::from_secs(timeout_secs), channel.wait())
+                .await
+                .map_err(|_| SshBackendError::Timeout)?;
+
+            match message {
+                Some(ChannelMsg::Data { data }) => {
+                    stdout.push_str(String::from_utf8_lossy(&data).as_ref());
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    stderr.push_str(String::from_utf8_lossy(&data).as_ref());
+                }
+                Some(ChannelMsg::ExitStatus {
+                    exit_status: status,
+                }) => {
+                    exit_status = Some(status);
+                }
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+
+        let _ = channel.eof().await;
+        let _ = channel.close().await;
+        Ok((exit_status.unwrap_or(0), stdout, stderr))
     }
 
     async fn open_sftp_session(&self, session_id: &str) -> SshResult<SftpSession> {
@@ -581,6 +955,11 @@ impl SshSessionRegistry {
             .ok_or(SshBackendError::SessionNotFound)
     }
 
+    async fn session_exists(&self, session_id: &str) -> bool {
+        let sessions = self.sessions.read().await;
+        sessions.contains_key(session_id)
+    }
+
     async fn remove_session(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.remove(session_id);
@@ -602,6 +981,263 @@ impl SshSessionRegistry {
         }
 
         self.remove_session(&session_id).await;
+    }
+
+    async fn run_sys_status_monitor(
+        &self,
+        app: AppHandle,
+        session_id: String,
+        handle: Arc<Mutex<client::Handle<ClientHandler>>>,
+        pulse_active: Arc<RwLock<bool>>,
+    ) {
+        let mut previous: Option<ProcSnapshot> = None;
+        let mut previous_at: Option<Instant> = None;
+        let mut logged_non_linux_hint = false;
+
+        loop {
+            if !self.session_exists(&session_id).await {
+                break;
+            }
+
+            let active = {
+                let guard = pulse_active.read().await;
+                *guard
+            };
+            let interval = if active {
+                Duration::from_secs(6)
+            } else {
+                Duration::from_secs(24)
+            };
+
+            if let Ok(sample) = sample_sys_status(handle.clone()).await {
+                let now = Instant::now();
+                let elapsed = previous_at
+                    .map(|value| now.saturating_duration_since(value))
+                    .unwrap_or_else(|| Duration::from_secs(0));
+
+                let status = build_sys_status(&sample, previous.as_ref(), elapsed);
+                previous = Some(sample);
+                previous_at = Some(now);
+                let _ = app.emit_all(
+                    "ssh-sys-status",
+                    SshSysStatusEvent {
+                        session_id: session_id.clone(),
+                        status,
+                    },
+                );
+            } else if !logged_non_linux_hint {
+                logged_non_linux_hint = true;
+                emit_diagnostic_log(
+                    &app,
+                    &session_id,
+                    "warn",
+                    "pulse",
+                    "Pulse 监控未读取到 /proc 数据，远端可能不是 Linux。".to_string(),
+                );
+            }
+
+            sleep(interval).await;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProcCpuTotals {
+    total: u64,
+    idle: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ProcSnapshot {
+    cpu: ProcCpuTotals,
+    memory_usage_percent: f64,
+    net_rx_total: u64,
+    net_tx_total: u64,
+}
+
+const SYS_STATUS_COMMAND: &str =
+    "sh -lc \"cat /proc/stat | head -n 1; grep -E '^MemTotal:|^MemAvailable:' /proc/meminfo; cat /proc/net/dev\"";
+
+async fn sample_sys_status(
+    handle: Arc<Mutex<client::Handle<ClientHandler>>>,
+) -> SshResult<ProcSnapshot> {
+    let mut channel = {
+        let guard = handle.lock().await;
+        guard
+            .channel_open_session()
+            .await
+            .map_err(|err| map_russh_error(&err))?
+    };
+
+    channel
+        .exec(true, SYS_STATUS_COMMAND)
+        .await
+        .map_err(|err| map_russh_error(&err))?;
+
+    let mut raw = String::new();
+    loop {
+        let message = timeout(Duration::from_secs(4), channel.wait())
+            .await
+            .map_err(|_| SshBackendError::Timeout)?;
+        match message {
+            Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                raw.push_str(String::from_utf8_lossy(&data).as_ref());
+            }
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                break;
+            }
+            Some(_) => {}
+        }
+    }
+
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+
+    parse_proc_snapshot(raw.as_str())
+}
+
+fn parse_proc_snapshot(raw: &str) -> SshResult<ProcSnapshot> {
+    let mut cpu_line: Option<&str> = None;
+    let mut mem_total_kb: Option<u64> = None;
+    let mut mem_available_kb: Option<u64> = None;
+    let mut net_rx_total: u64 = 0;
+    let mut net_tx_total: u64 = 0;
+    let mut saw_non_loopback = false;
+    let mut fallback_rx_total: u64 = 0;
+    let mut fallback_tx_total: u64 = 0;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.starts_with("cpu ") {
+            cpu_line = Some(trimmed);
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("MemTotal:") {
+            mem_total_kb = parse_kb_value(rest);
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("MemAvailable:") {
+            mem_available_kb = parse_kb_value(rest);
+            continue;
+        }
+
+        if let Some((iface_raw, stats_raw)) = trimmed.split_once(':') {
+            let iface = iface_raw.trim();
+            let fields = stats_raw
+                .split_whitespace()
+                .filter_map(|value| value.parse::<u64>().ok())
+                .collect::<Vec<u64>>();
+            if fields.len() < 9 {
+                continue;
+            }
+            let rx = fields[0];
+            let tx = fields[8];
+            fallback_rx_total = fallback_rx_total.saturating_add(rx);
+            fallback_tx_total = fallback_tx_total.saturating_add(tx);
+            if iface != "lo" {
+                saw_non_loopback = true;
+                net_rx_total = net_rx_total.saturating_add(rx);
+                net_tx_total = net_tx_total.saturating_add(tx);
+            }
+        }
+    }
+
+    if !saw_non_loopback {
+        net_rx_total = fallback_rx_total;
+        net_tx_total = fallback_tx_total;
+    }
+
+    let cpu = parse_cpu_line(cpu_line.ok_or_else(|| {
+        SshBackendError::SftpOperation("无法解析 /proc/stat".to_string())
+    })?)?;
+
+    let total_kb = mem_total_kb.ok_or_else(|| {
+        SshBackendError::SftpOperation("无法解析 /proc/meminfo".to_string())
+    })?;
+    let available_kb = mem_available_kb.ok_or_else(|| {
+        SshBackendError::SftpOperation("无法解析 /proc/meminfo".to_string())
+    })?;
+    if total_kb == 0 {
+        return Err(SshBackendError::SftpOperation(
+            "远端内存信息无效".to_string(),
+        ));
+    }
+    let used_kb = total_kb.saturating_sub(available_kb);
+    let memory_usage_percent = (used_kb as f64 / total_kb as f64) * 100.0;
+
+    Ok(ProcSnapshot {
+        cpu,
+        memory_usage_percent,
+        net_rx_total,
+        net_tx_total,
+    })
+}
+
+fn parse_kb_value(raw: &str) -> Option<u64> {
+    raw.split_whitespace().next()?.parse::<u64>().ok()
+}
+
+fn parse_cpu_line(line: &str) -> SshResult<ProcCpuTotals> {
+    let fields = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse::<u64>().ok())
+        .collect::<Vec<u64>>();
+    if fields.len() < 4 {
+        return Err(SshBackendError::SftpOperation(
+            "远端 CPU 指标无效".to_string(),
+        ));
+    }
+
+    let total = fields.iter().copied().fold(0_u64, u64::saturating_add);
+    let idle = fields[3].saturating_add(*fields.get(4).unwrap_or(&0));
+    Ok(ProcCpuTotals { total, idle })
+}
+
+fn build_sys_status(
+    current: &ProcSnapshot,
+    previous: Option<&ProcSnapshot>,
+    elapsed: Duration,
+) -> SysStatus {
+    let cpu_usage_percent = if let Some(prev) = previous {
+        let total_delta = current.cpu.total.saturating_sub(prev.cpu.total);
+        let idle_delta = current.cpu.idle.saturating_sub(prev.cpu.idle);
+        if total_delta == 0 {
+            0.0
+        } else {
+            ((total_delta.saturating_sub(idle_delta)) as f64 / total_delta as f64) * 100.0
+        }
+    } else {
+        0.0
+    };
+
+    let elapsed_secs = elapsed.as_secs_f64();
+    let (net_rx_bytes_per_sec, net_tx_bytes_per_sec) = if let Some(prev) = previous {
+        if elapsed_secs <= 0.0 {
+            (0.0, 0.0)
+        } else {
+            (
+                current.net_rx_total.saturating_sub(prev.net_rx_total) as f64 / elapsed_secs,
+                current.net_tx_total.saturating_sub(prev.net_tx_total) as f64 / elapsed_secs,
+            )
+        }
+    } else {
+        (0.0, 0.0)
+    };
+
+    SysStatus {
+        cpu_usage_percent: cpu_usage_percent.clamp(0.0, 100.0),
+        memory_usage_percent: current.memory_usage_percent.clamp(0.0, 100.0),
+        net_rx_bytes_per_sec: net_rx_bytes_per_sec.max(0.0),
+        net_tx_bytes_per_sec: net_tx_bytes_per_sec.max(0.0),
+        sampled_at: now_unix_ts(),
+        interval_secs: elapsed.as_secs(),
     }
 }
 

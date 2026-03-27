@@ -106,6 +106,89 @@ pub struct SshClosedEvent {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshPulseActivityRequest {
+    pub session_id: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SshKeyAlgorithm {
+    Ed25519,
+    Rsa4096,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshGenerateKeypairRequest {
+    pub algorithm: SshKeyAlgorithm,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshGenerateKeypairResponse {
+    pub algorithm: SshKeyAlgorithm,
+    pub private_key: String,
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshDerivePublicKeyRequest {
+    pub private_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshDerivePublicKeyResponse {
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshDeployPublicKeyRequest {
+    pub session_id: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshExportPrivateKeyRequest {
+    pub private_key: String,
+    pub destination_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshExportPrivateKeyResponse {
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SysStatus {
+    pub cpu_usage_percent: f64,
+    pub memory_usage_percent: f64,
+    pub net_rx_bytes_per_sec: f64,
+    pub net_tx_bytes_per_sec: f64,
+    pub sampled_at: i64,
+    pub interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshSysStatusEvent {
+    pub session_id: String,
+    pub status: SysStatus,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshDiagnosticLogEvent {
@@ -172,6 +255,16 @@ pub struct IdentityConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub id: String,
+    pub title: String,
+    pub command: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UnlockAndLoadRequest {
     pub master_password: String,
 }
@@ -181,6 +274,7 @@ pub struct UnlockAndLoadRequest {
 pub struct UnlockAndLoadResponse {
     pub hosts: Vec<HostConfig>,
     pub identities: Vec<IdentityConfig>,
+    pub snippets: Vec<Snippet>,
     pub version: u64,
     pub updated_at: i64,
 }
@@ -190,6 +284,8 @@ pub struct UnlockAndLoadResponse {
 pub struct SaveVaultRequest {
     pub hosts: Vec<HostConfig>,
     pub identities: Vec<IdentityConfig>,
+    #[serde(default)]
+    pub snippets: Vec<Snippet>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -277,8 +373,13 @@ pub struct SftpRenameRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SftpUploadRequest {
     pub session_id: String,
-    pub local_path: String,
+    pub local_path: Option<String>,
     pub remote_path: String,
+    pub content_base64: Option<String>,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
+    #[serde(default)]
+    pub resume_from: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -287,6 +388,27 @@ pub struct SftpDownloadRequest {
     pub session_id: String,
     pub remote_path: String,
     pub local_path: String,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
+    #[serde(default)]
+    pub resume_from: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpReadTextRequest {
+    pub session_id: String,
+    pub remote_path: String,
+    pub max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpReadTextResponse {
+    pub path: String,
+    pub content: String,
+    pub bytes: u64,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -312,13 +434,18 @@ pub struct SftpLsResponse {
 pub struct SftpTransferResponse {
     pub path: String,
     pub bytes: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SftpTransferProgressEvent {
     pub session_id: String,
+    pub transfer_id: String,
+    pub direction: String,
     pub remote_path: String,
     pub local_path: String,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
     pub progress: u8,
 }

@@ -17,13 +17,30 @@ interface SftpLsResponse {
 interface SftpTransferResponse {
   path: string;
   bytes: number;
+  totalBytes: number;
+}
+
+interface SftpReadTextResponse {
+  path: string;
+  content: string;
+  bytes: number;
+  truncated: boolean;
 }
 
 export interface SftpTransferProgressEvent {
   sessionId: string;
+  transferId: string;
+  direction: 'upload' | 'download';
   remotePath: string;
   localPath: string;
+  transferredBytes: number;
+  totalBytes: number;
   progress: number;
+}
+
+interface SftpTransferOptions {
+  transferId?: string;
+  resumeFrom?: number;
 }
 
 export const sftpLs = async (
@@ -78,13 +95,40 @@ export const sftpRename = async (
 export const sftpUpload = async (
   sessionId: string,
   localPath: string,
-  remotePath: string
+  remotePath: string,
+  options?: SftpTransferOptions
 ): Promise<SftpTransferResponse> => {
   return tauriInvoke<SftpTransferResponse>('sftp_upload', {
     request: {
       sessionId,
       localPath,
-      remotePath
+      remotePath,
+      transferId: options?.transferId,
+      resumeFrom: options?.resumeFrom
+    }
+  });
+};
+
+const encodeUtf8Base64 = (text: string): string => {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return window.btoa(binary);
+};
+
+export const sftpUploadContent = async (
+  sessionId: string,
+  remotePath: string,
+  content: string
+): Promise<SftpTransferResponse> => {
+  return tauriInvoke<SftpTransferResponse>('sftp_upload', {
+    request: {
+      sessionId,
+      remotePath,
+      contentBase64: encodeUtf8Base64(content),
+      resumeFrom: 0
     }
   });
 };
@@ -92,13 +136,30 @@ export const sftpUpload = async (
 export const sftpDownload = async (
   sessionId: string,
   remotePath: string,
-  localPath: string
+  localPath: string,
+  options?: SftpTransferOptions
 ): Promise<SftpTransferResponse> => {
   return tauriInvoke<SftpTransferResponse>('sftp_download', {
     request: {
       sessionId,
       remotePath,
-      localPath
+      localPath,
+      transferId: options?.transferId,
+      resumeFrom: options?.resumeFrom
+    }
+  });
+};
+
+export const sftpReadText = async (
+  sessionId: string,
+  remotePath: string,
+  maxBytes = 2 * 1024 * 1024
+): Promise<SftpReadTextResponse> => {
+  return tauriInvoke<SftpReadTextResponse>('sftp_read_text', {
+    request: {
+      sessionId,
+      remotePath,
+      maxBytes
     }
   });
 };

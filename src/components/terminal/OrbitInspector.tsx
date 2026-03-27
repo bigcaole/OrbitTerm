@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { AiExplainSshErrorResponse } from '../../services/ai';
 import type { HealthCheckResponse, SshDiagnosticLogEvent } from '../../services/inspector';
 
-interface LoyuInspectorProps {
+interface OrbitInspectorProps {
   open: boolean;
   sessionId: string | null;
   logs: SshDiagnosticLogEvent[];
@@ -33,7 +33,7 @@ const levelBadgeClass = (level: string): string => {
   return 'bg-cyan-500/20 text-cyan-200';
 };
 
-export function LoyuInspector({
+export function OrbitInspector({
   open,
   sessionId,
   logs,
@@ -43,7 +43,7 @@ export function LoyuInspector({
   onAskAi,
   onExportBackup,
   onRefreshHealth
-}: LoyuInspectorProps): JSX.Element | null {
+}: OrbitInspectorProps): JSX.Element | null {
   const [aiAdvice, setAiAdvice] = useState<AiExplainSshErrorResponse | null>(null);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);

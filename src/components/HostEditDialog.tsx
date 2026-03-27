@@ -15,6 +15,7 @@ const editHostSchema = z
       .refine((value) => hostPattern.test(value), '请输入合法的域名、IPv4 或 [IPv6] 地址'),
     port: z.coerce.number().int('端口必须是整数').min(1, '端口最小为 1').max(65535, '端口最大为 65535'),
     description: z.string().max(160, '备注不能超过 160 个字符').default(''),
+    tagsText: z.string().max(120, '标签总长度不能超过 120 个字符').default(''),
     identityName: z.string().max(50, '身份名称不能超过 50 个字符').default(''),
     identityUsername: z.string().min(1, '请输入登录用户名').max(64, '用户名不能超过 64 个字符'),
     method: z.enum(['password', 'privateKey'], {
@@ -86,6 +87,7 @@ export function HostEditDialog({
       address: '',
       port: 22,
       description: '',
+      tagsText: '',
       identityName: '',
       identityUsername: '',
       method: 'password',
@@ -105,6 +107,7 @@ export function HostEditDialog({
       address: host.basicInfo.address,
       port: host.basicInfo.port,
       description: host.basicInfo.description,
+      tagsText: host.advancedOptions.tags.join(','),
       identityName: identity.name,
       identityUsername: identity.username,
       method: identity.authConfig.method,
@@ -158,6 +161,18 @@ export function HostEditDialog({
               <input className={inputClassName} placeholder="例如：生产集群入口" {...register('description')} />
               {errors.description && <p className="text-xs text-rose-300">{errors.description.message}</p>}
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-[0.14em] text-[#95b0d8]">
+              标签（逗号分隔）
+            </label>
+            <input
+              className={inputClassName}
+              placeholder="例如：生产,测试,内网"
+              {...register('tagsText')}
+            />
+            {errors.tagsText && <p className="text-xs text-rose-300">{errors.tagsText.message}</p>}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-[1fr_160px]">

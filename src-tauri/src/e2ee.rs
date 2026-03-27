@@ -8,9 +8,18 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-const E2EE_HEADER: &[u8] = b"LOYU_E2EE_V1";
-const PASSWORD_PROOF_CTX: &[u8] = b"LOYU_PASSWORD_PROOF";
-const PAYLOAD_MAC_CTX: &[u8] = b"LOYU_PAYLOAD_MAC";
+const E2EE_HEADER: &[u8] = b"ORBITTERM_E2EE_V1";
+const PASSWORD_PROOF_CTX: &[u8] = b"ORBITTERM_PASSWORD_PROOF";
+const PAYLOAD_MAC_CTX: &[u8] = b"ORBITTERM_PAYLOAD_MAC";
+const ENC_KEY_LABEL: &[u8] = b"orbitterm-enc-key";
+const MAC_KEY_LABEL: &[u8] = b"orbitterm-mac-key";
+const LEGACY_E2EE_HEADER: &[u8] = b"\x4c\x4f\x59\x55\x5f\x45\x32\x45\x45\x5f\x56\x31";
+const LEGACY_PASSWORD_PROOF_CTX: &[u8] =
+    b"\x4c\x4f\x59\x55\x5f\x50\x41\x53\x53\x57\x4f\x52\x44\x5f\x50\x52\x4f\x4f\x46";
+const LEGACY_PAYLOAD_MAC_CTX: &[u8] =
+    b"\x4c\x4f\x59\x55\x5f\x50\x41\x59\x4c\x4f\x41\x44\x5f\x4d\x41\x43";
+const LEGACY_ENC_KEY_LABEL: &[u8] = b"\x6c\x6f\x79\x75\x2d\x65\x6e\x63\x2d\x6b\x65\x79";
+const LEGACY_MAC_KEY_LABEL: &[u8] = b"\x6c\x6f\x79\x75\x2d\x6d\x61\x63\x2d\x6b\x65\x79";
 const ARGON2_TIME_COST: u32 = 3;
 const ARGON2_MEMORY_COST_KIB: u32 = 64 * 1024;
 const ARGON2_LANES: u32 = 1;
@@ -20,6 +29,41 @@ const KEY_LEN: usize = 32;
 pub const DERIVED_KEY_LEN: usize = KEY_LEN;
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Clone, Copy)]
+struct CryptoProfile {
+    header: &'static [u8],
+    password_proof_ctx: &'static [u8],
+    payload_mac_ctx: &'static [u8],
+    enc_key_label: &'static [u8],
+    mac_key_label: &'static [u8],
+}
+
+const CURRENT_PROFILE: CryptoProfile = CryptoProfile {
+    header: E2EE_HEADER,
+    password_proof_ctx: PASSWORD_PROOF_CTX,
+    payload_mac_ctx: PAYLOAD_MAC_CTX,
+    enc_key_label: ENC_KEY_LABEL,
+    mac_key_label: MAC_KEY_LABEL,
+};
+
+const LEGACY_PROFILE: CryptoProfile = CryptoProfile {
+    header: LEGACY_E2EE_HEADER,
+    password_proof_ctx: LEGACY_PASSWORD_PROOF_CTX,
+    payload_mac_ctx: LEGACY_PAYLOAD_MAC_CTX,
+    enc_key_label: LEGACY_ENC_KEY_LABEL,
+    mac_key_label: LEGACY_MAC_KEY_LABEL,
+};
+
+fn profile_from_header(header: &[u8]) -> Option<&'static CryptoProfile> {
+    if header == CURRENT_PROFILE.header {
+        return Some(&CURRENT_PROFILE);
+    }
+    if header == LEGACY_PROFILE.header {
+        return Some(&LEGACY_PROFILE);
+    }
+    None
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,15 +147,15 @@ pub fn decrypt_cloud_vault(
         return Err(E2eeError::EmptyPassword);
     }
 
-    validate_package(encrypted)?;
+    let profile = validate_package(encrypted)?;
 
     let mut salt = [0_u8; SALT_LEN];
     salt.copy_from_slice(&encrypted.salt);
 
     let root_key = derive_root_key(master_password, &salt)?;
-    let (enc_key, mac_key) = derive_subkeys(&root_key);
+    let (enc_key, mac_key) = derive_subkeys(&root_key, profile);
 
-    verify_password_proof(mac_key.as_ref(), &salt, &encrypted.password_proof)?;
+    verify_password_proof(mac_key.as_ref(), &salt, &encrypted.password_proof, profile)?;
 
     verify_payload_hmac(
         mac_key.as_ref(),
@@ -121,6 +165,7 @@ pub fn decrypt_cloud_vault(
         &encrypted.nonce,
         &encrypted.ciphertext,
         &encrypted.payload_hmac,
+        profile,
     )?;
 
     let cipher =
@@ -146,14 +191,14 @@ pub fn derive_session_key(
         return Err(E2eeError::EmptyPassword);
     }
 
-    validate_package(encrypted)?;
+    let profile = validate_package(encrypted)?;
 
     let mut salt = [0_u8; SALT_LEN];
     salt.copy_from_slice(&encrypted.salt);
 
     let root_key = derive_root_key(master_password, &salt)?;
-    let (_enc_key, mac_key) = derive_subkeys(&root_key);
-    verify_password_proof(mac_key.as_ref(), &salt, &encrypted.password_proof)?;
+    let (_enc_key, mac_key) = derive_subkeys(&root_key, profile);
+    verify_password_proof(mac_key.as_ref(), &salt, &encrypted.password_proof, profile)?;
 
     Ok(root_key)
 }
@@ -184,10 +229,8 @@ pub fn resolve_lww(local: &CloudVault, incoming: &CloudVault) -> CloudVault {
     }
 }
 
-fn validate_package(encrypted: &EncryptedVault) -> Result<(), E2eeError> {
-    if encrypted.header.as_bytes() != E2EE_HEADER {
-        return Err(E2eeError::InvalidHeader);
-    }
+fn validate_package(encrypted: &EncryptedVault) -> Result<&'static CryptoProfile, E2eeError> {
+    let profile = profile_from_header(encrypted.header.as_bytes()).ok_or(E2eeError::InvalidHeader)?;
 
     if encrypted.salt.len() != SALT_LEN || encrypted.nonce.len() != NONCE_LEN {
         return Err(E2eeError::InvalidPackage);
@@ -197,7 +240,7 @@ fn validate_package(encrypted: &EncryptedVault) -> Result<(), E2eeError> {
         return Err(E2eeError::InvalidPackage);
     }
 
-    Ok(())
+    Ok(profile)
 }
 
 fn derive_root_key(
@@ -224,15 +267,16 @@ fn derive_root_key(
 
 fn derive_subkeys(
     root_key: &[u8; KEY_LEN],
+    profile: &CryptoProfile,
 ) -> (Zeroizing<[u8; KEY_LEN]>, Zeroizing<[u8; KEY_LEN]>) {
     let mut enc_hasher = Sha256::new();
     enc_hasher.update(root_key);
-    enc_hasher.update(b"loyu-enc-key");
+    enc_hasher.update(profile.enc_key_label);
     let enc_digest = enc_hasher.finalize();
 
     let mut mac_hasher = Sha256::new();
     mac_hasher.update(root_key);
-    mac_hasher.update(b"loyu-mac-key");
+    mac_hasher.update(profile.mac_key_label);
     let mac_digest = mac_hasher.finalize();
 
     let mut enc_key = Zeroizing::new([0_u8; KEY_LEN]);
@@ -243,20 +287,29 @@ fn derive_subkeys(
     (enc_key, mac_key)
 }
 
-fn compute_password_proof(mac_key: &[u8], salt: &[u8]) -> Result<Vec<u8>, E2eeError> {
+fn compute_password_proof(
+    mac_key: &[u8],
+    salt: &[u8],
+    profile: &CryptoProfile,
+) -> Result<Vec<u8>, E2eeError> {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(mac_key).map_err(|_| E2eeError::KeyDerivation)?;
-    mac.update(E2EE_HEADER);
-    mac.update(PASSWORD_PROOF_CTX);
+    mac.update(profile.header);
+    mac.update(profile.password_proof_ctx);
     mac.update(salt);
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
-fn verify_password_proof(mac_key: &[u8], salt: &[u8], expected: &[u8]) -> Result<(), E2eeError> {
+fn verify_password_proof(
+    mac_key: &[u8],
+    salt: &[u8],
+    expected: &[u8],
+    profile: &CryptoProfile,
+) -> Result<(), E2eeError> {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(mac_key).map_err(|_| E2eeError::KeyDerivation)?;
-    mac.update(E2EE_HEADER);
-    mac.update(PASSWORD_PROOF_CTX);
+    mac.update(profile.header);
+    mac.update(profile.password_proof_ctx);
     mac.update(salt);
     mac.verify_slice(expected)
         .map_err(|_| E2eeError::WrongMasterPassword)
@@ -269,11 +322,12 @@ fn compute_payload_hmac(
     salt: &[u8],
     nonce: &[u8],
     ciphertext: &[u8],
+    profile: &CryptoProfile,
 ) -> Result<Vec<u8>, E2eeError> {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(mac_key).map_err(|_| E2eeError::KeyDerivation)?;
-    mac.update(E2EE_HEADER);
-    mac.update(PAYLOAD_MAC_CTX);
+    mac.update(profile.header);
+    mac.update(profile.payload_mac_ctx);
     mac.update(&version.to_le_bytes());
     mac.update(&updated_at.to_le_bytes());
     mac.update(salt);
@@ -290,11 +344,12 @@ fn verify_payload_hmac(
     nonce: &[u8],
     ciphertext: &[u8],
     expected: &[u8],
+    profile: &CryptoProfile,
 ) -> Result<(), E2eeError> {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(mac_key).map_err(|_| E2eeError::KeyDerivation)?;
-    mac.update(E2EE_HEADER);
-    mac.update(PAYLOAD_MAC_CTX);
+    mac.update(profile.header);
+    mac.update(profile.payload_mac_ctx);
     mac.update(&version.to_le_bytes());
     mac.update(&updated_at.to_le_bytes());
     mac.update(salt);
@@ -311,7 +366,8 @@ fn encrypt_with_derived_key_and_nonce(
     nonce: &[u8; NONCE_LEN],
     vault: &CloudVault,
 ) -> Result<EncryptedVault, E2eeError> {
-    let (enc_key, mac_key) = derive_subkeys(derived_key);
+    let profile = &CURRENT_PROFILE;
+    let (enc_key, mac_key) = derive_subkeys(derived_key, profile);
 
     let plaintext =
         Zeroizing::new(serde_json::to_vec(vault).map_err(|_| E2eeError::SerializeFailed)?);
@@ -322,7 +378,7 @@ fn encrypt_with_derived_key_and_nonce(
         .encrypt(Nonce::from_slice(nonce), plaintext.as_ref())
         .map_err(|_| E2eeError::EncryptFailed)?;
 
-    let password_proof = compute_password_proof(mac_key.as_ref(), salt)?;
+    let password_proof = compute_password_proof(mac_key.as_ref(), salt, profile)?;
     let payload_hmac = compute_payload_hmac(
         mac_key.as_ref(),
         vault.version,
@@ -330,10 +386,11 @@ fn encrypt_with_derived_key_and_nonce(
         salt,
         nonce,
         &ciphertext,
+        profile,
     )?;
 
     Ok(EncryptedVault {
-        header: String::from_utf8_lossy(E2EE_HEADER).to_string(),
+        header: String::from_utf8_lossy(profile.header).to_string(),
         version: vault.version,
         updated_at: vault.updated_at,
         kdf: KdfParams {

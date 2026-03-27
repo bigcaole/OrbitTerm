@@ -1,17 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { open, save } from '@tauri-apps/api/dialog';
 import { toast } from 'sonner';
 import {
   type SftpEntry,
-  type SftpTransferProgressEvent,
-  sftpDownload,
   sftpLs,
   sftpMkdir,
+  sftpReadText,
   sftpRename,
   sftpRm,
-  sftpUpload
+  sftpUploadContent
 } from '../../services/sftp';
+import { useTransferStore } from '../../store/useTransferStore';
 
 interface SftpManagerProps {
   sessionId: string | null;
@@ -47,6 +46,11 @@ interface VirtualWindow {
 const VIRTUAL_LIST_THRESHOLD = 1000;
 const VIRTUAL_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 8;
+
+const MonacoEditor = lazy(async () => {
+  const module = await import('@monaco-editor/react');
+  return { default: module.default };
+});
 
 const joinRemotePath = (base: string, name: string): string => {
   if (base === '/') {
@@ -106,6 +110,68 @@ const scriptRunCommand = (entry: SftpEntry): string | null => {
   return null;
 };
 
+const editableExtensions = new Set([
+  'conf',
+  'sh',
+  'bash',
+  'zsh',
+  'yml',
+  'yaml',
+  'txt',
+  'log',
+  'ini',
+  'cfg',
+  'env',
+  'json',
+  'md',
+  'properties'
+]);
+
+const extensionOf = (name: string): string => {
+  const idx = name.lastIndexOf('.');
+  if (idx < 0 || idx === name.length - 1) {
+    return '';
+  }
+  return name.slice(idx + 1).toLowerCase();
+};
+
+const canEditEntry = (entry: SftpEntry): boolean => {
+  if (entry.isDir) {
+    return false;
+  }
+  const ext = extensionOf(entry.name);
+  return editableExtensions.has(ext);
+};
+
+const detectLanguage = (entry: SftpEntry): string => {
+  const ext = extensionOf(entry.name);
+  if (['sh', 'bash', 'zsh'].includes(ext)) {
+    return 'shell';
+  }
+  if (['yml', 'yaml'].includes(ext)) {
+    return 'yaml';
+  }
+  if (ext === 'json') {
+    return 'json';
+  }
+  if (['md'].includes(ext)) {
+    return 'markdown';
+  }
+  if (['ini', 'cfg', 'conf', 'properties', 'env'].includes(ext)) {
+    return 'ini';
+  }
+  if (['ts', 'tsx'].includes(ext)) {
+    return 'typescript';
+  }
+  if (['js', 'jsx', 'mjs'].includes(ext)) {
+    return 'javascript';
+  }
+  if (ext === 'py') {
+    return 'python';
+  }
+  return 'plaintext';
+};
+
 const iconForEntry = (entry: SftpEntry): string => {
   if (entry.isDir) {
     return '📁';
@@ -157,11 +223,19 @@ export function SftpManager({
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const [editorEntry, setEditorEntry] = useState<SftpEntry | null>(null);
+  const [editorOpen, setEditorOpen] = useState<boolean>(false);
+  const [editorLoading, setEditorLoading] = useState<boolean>(false);
+  const [editorSaving, setEditorSaving] = useState<boolean>(false);
+  const [editorLanguage, setEditorLanguage] = useState<string>('plaintext');
+  const [editorContent, setEditorContent] = useState<string>('');
+  const [editorOriginalContent, setEditorOriginalContent] = useState<string>('');
+  const [editorTruncated, setEditorTruncated] = useState<boolean>(false);
   const [scrollTop, setScrollTop] = useState<number>(0);
   const [viewportHeight, setViewportHeight] = useState<number>(240);
-  const completedUploadKeysRef = useRef<Set<string>>(new Set());
   const listViewportRef = useRef<HTMLDivElement | null>(null);
+  const enqueueUploadTask = useTransferStore((state) => state.enqueueUploadTask);
+  const enqueueDownloadTask = useTransferStore((state) => state.enqueueDownloadTask);
 
   const sortedEntries = useMemo(() => {
     return [...entries].sort((a, b) => {
@@ -212,6 +286,10 @@ export function SftpManager({
     return sortedEntries.slice(virtualWindow.start, virtualWindow.end);
   }, [isVirtualList, sortedEntries, virtualWindow.end, virtualWindow.start]);
 
+  const editorDirty = useMemo(() => {
+    return editorContent !== editorOriginalContent;
+  }, [editorContent, editorOriginalContent]);
+
   const reportError = (message: string): void => {
     setError(message);
     toast.error(message, {
@@ -242,6 +320,11 @@ export function SftpManager({
       setEntries([]);
       setCurrentPath('/');
       setError(null);
+      setEditorOpen(false);
+      setEditorEntry(null);
+      setEditorContent('');
+      setEditorOriginalContent('');
+      setEditorTruncated(false);
       return;
     }
     void loadDirectory('.');
@@ -252,52 +335,6 @@ export function SftpManager({
     window.addEventListener('click', closeMenu);
     return () => window.removeEventListener('click', closeMenu);
   }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: UnlistenFn | null = null;
-
-    void listen<SftpTransferProgressEvent>('sftp-upload-progress', (event) => {
-      if (disposed || !sessionId || event.payload.sessionId !== sessionId) {
-        return;
-      }
-
-      const key = `${event.payload.localPath}=>${event.payload.remotePath}`;
-      setUploadProgress((prev) => ({
-        ...prev,
-        [key]: event.payload.progress
-      }));
-
-      if (event.payload.progress >= 100) {
-        if (!completedUploadKeysRef.current.has(key)) {
-          completedUploadKeysRef.current.add(key);
-          toast.success(`上传完成：${basename(event.payload.localPath)}`);
-        }
-        window.setTimeout(() => {
-          setUploadProgress((prev) => {
-            const next = { ...prev };
-            delete next[key];
-            return next;
-          });
-          completedUploadKeysRef.current.delete(key);
-          void loadDirectory(currentPath);
-        }, 500);
-      }
-    }).then((fn) => {
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-    });
-
-    return () => {
-      disposed = true;
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, [sessionId, currentPath]);
 
   useEffect(() => {
     if (!sessionId || !syncRequest) {
@@ -389,18 +426,21 @@ export function SftpManager({
     }
 
     const localPaths = Array.isArray(selected) ? selected : [selected];
+    let enqueuedCount = 0;
     for (const localPath of localPaths) {
       const name = basename(localPath);
       const remotePath = joinRemotePath(currentPath, name);
-      try {
-        await sftpUpload(sessionId, localPath, remotePath);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : `上传 ${name} 失败。`;
-        reportError(message);
-        break;
-      }
+      enqueueUploadTask({
+        sessionId,
+        localPath,
+        remotePath,
+        fileName: name
+      });
+      enqueuedCount += 1;
     }
-    await loadDirectory(currentPath);
+    if (enqueuedCount > 0) {
+      toast.success(`已加入 ${enqueuedCount} 个上传任务`);
+    }
   };
 
   const handleDownload = async (entry: SftpEntry): Promise<void> => {
@@ -417,13 +457,14 @@ export function SftpManager({
     if (!savePath || Array.isArray(savePath)) {
       return;
     }
-    try {
-      await sftpDownload(sessionId, entry.path, savePath);
-      toast.success(`已下载 ${entry.name}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '下载失败。';
-      reportError(message);
-    }
+    enqueueDownloadTask({
+      sessionId,
+      remotePath: entry.path,
+      localPath: savePath,
+      fileName: entry.name,
+      totalBytes: entry.size
+    });
+    toast.success(`已加入下载队列：${entry.name}`);
   };
 
   const handleDelete = async (entry: SftpEntry): Promise<void> => {
@@ -505,6 +546,97 @@ export function SftpManager({
       reportError(message);
     }
   };
+
+  const openEditor = async (entry: SftpEntry): Promise<void> => {
+    if (!sessionId || !canEditEntry(entry)) {
+      return;
+    }
+
+    setEditorOpen(true);
+    setEditorEntry(entry);
+    setEditorLanguage(detectLanguage(entry));
+    setEditorLoading(true);
+    setEditorSaving(false);
+    setEditorContent('');
+    setEditorOriginalContent('');
+    setEditorTruncated(false);
+    setError(null);
+    try {
+      const response = await sftpReadText(sessionId, entry.path);
+      setEditorContent(response.content);
+      setEditorOriginalContent(response.content);
+      setEditorTruncated(response.truncated);
+      if (response.truncated) {
+        toast.warning('文件较大，已按上限加载，保存将覆盖为当前内容。');
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '读取远端文件失败。';
+      setEditorOpen(false);
+      setEditorEntry(null);
+      reportError(message);
+    } finally {
+      setEditorLoading(false);
+    }
+  };
+
+  const closeEditor = (): void => {
+    if (editorSaving) {
+      return;
+    }
+    if (editorDirty) {
+      const confirmed = window.confirm('当前文件有未保存修改，确认关闭编辑器吗？');
+      if (!confirmed) {
+        return;
+      }
+    }
+    setEditorOpen(false);
+    setEditorEntry(null);
+    setEditorContent('');
+    setEditorOriginalContent('');
+    setEditorTruncated(false);
+  };
+
+  const saveEditor = async (): Promise<void> => {
+    if (!sessionId || !editorEntry || editorSaving || editorLoading) {
+      return;
+    }
+
+    setEditorSaving(true);
+    try {
+      await sftpUploadContent(sessionId, editorEntry.path, editorContent);
+      setEditorOriginalContent(editorContent);
+      setEditorTruncated(false);
+      toast.success('保存成功');
+      await loadDirectory(currentPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '保存失败。';
+      reportError(message);
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!editorOpen) {
+      return;
+    }
+
+    const handler = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+      if (event.key.toLowerCase() !== 's') {
+        return;
+      }
+      event.preventDefault();
+      void saveEditor();
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+    };
+  }, [editorOpen, editorEntry, editorContent, editorLoading, editorSaving, sessionId]);
 
   const renderRow = (entry: SftpEntry): JSX.Element => {
     return (
@@ -590,22 +722,6 @@ export function SftpManager({
         ))}
       </div>
 
-      {Object.keys(uploadProgress).length > 0 && (
-        <div className="mt-3 space-y-2">
-          {Object.entries(uploadProgress).map(([key, progress]) => (
-            <div className="space-y-1" key={key}>
-              <div className="flex items-center justify-between text-[11px] text-[#b8cae6]">
-                <span className="truncate">{key}</span>
-                <span>{progress}%</span>
-              </div>
-              <div className="h-1.5 rounded bg-[#1a2a42]">
-                <div className="h-1.5 rounded bg-[#3a7bff]" style={{ width: `${progress}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
       {sessionId && !loading && isVirtualList && (
         <p className="mt-2 text-[11px] text-[#7fa0ca]">
@@ -658,6 +774,18 @@ export function SftpManager({
           className="fixed z-50 min-w-[150px] rounded-lg border border-[#38557f] bg-[#0f1d31] p-1 text-xs text-[#d4e1f7] shadow-xl"
           style={{ left: menu.x, top: menu.y }}
         >
+          {canEditEntry(menu.entry) && (
+            <button
+              className="block w-full rounded px-2 py-1 text-left hover:bg-[#1c2f4d]"
+              onClick={() => {
+                void openEditor(menu.entry);
+                setMenu(null);
+              }}
+              type="button"
+            >
+              编辑
+            </button>
+          )}
           <button
             className="block w-full rounded px-2 py-1 text-left hover:bg-[#1c2f4d]"
             onClick={() => {
@@ -722,6 +850,89 @@ export function SftpManager({
           >
             复制路径
           </button>
+        </div>
+      )}
+
+      {editorOpen && editorEntry && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+          <div className="flex h-[80vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[#31507a] bg-[#0b1628] shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-[#1e3557] px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-[#d8e7ff]">{editorEntry.name}</p>
+                <p className="truncate text-[11px] text-[#9db5d8]">{editorEntry.path}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-md border border-[#33527d] bg-[#10223c] px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-[#b5cced]">
+                  {editorLanguage}
+                </span>
+                <span
+                  className={`rounded-md border px-2 py-1 text-[10px] ${
+                    editorDirty
+                      ? 'border-amber-400 bg-amber-300/20 text-amber-200'
+                      : 'border-emerald-400 bg-emerald-300/20 text-emerald-200'
+                  }`}
+                >
+                  {editorDirty ? '未保存' : '已保存'}
+                </span>
+                <button
+                  className="rounded-md border border-[#3e5b85] bg-[#10213b] px-3 py-1.5 text-xs text-[#d7e5ff] hover:bg-[#17305a] disabled:opacity-50"
+                  disabled={editorSaving || editorLoading}
+                  onClick={() => {
+                    void saveEditor();
+                  }}
+                  type="button"
+                >
+                  {editorSaving ? '保存中...' : '保存 (Cmd/Ctrl+S)'}
+                </button>
+                <button
+                  className="rounded-md border border-[#3e5b85] bg-[#10213b] px-3 py-1.5 text-xs text-[#d7e5ff] hover:bg-[#17305a] disabled:opacity-50"
+                  disabled={editorSaving}
+                  onClick={closeEditor}
+                  type="button"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            {editorTruncated && (
+              <p className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
+                当前文件超出加载上限，编辑器仅显示部分内容。保存会覆盖为当前内容。
+              </p>
+            )}
+            <div className="min-h-0 flex-1">
+              {editorLoading ? (
+                <div className="flex h-full items-center justify-center text-sm text-[#9cb4d7]">
+                  正在加载远端文件...
+                </div>
+              ) : (
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center text-sm text-[#9cb4d7]">
+                      正在加载编辑器...
+                    </div>
+                  }
+                >
+                  <MonacoEditor
+                    height="100%"
+                    language={editorLanguage}
+                    onChange={(value) => {
+                      setEditorContent(value ?? '');
+                    }}
+                    options={{
+                      automaticLayout: true,
+                      fontSize: 13,
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      smoothScrolling: true,
+                      wordWrap: 'on'
+                    }}
+                    theme="vs-dark"
+                    value={editorContent}
+                  />
+                </Suspense>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </section>

@@ -84,7 +84,7 @@ struct RelayNested {
 
 impl AiRuntimeConfig {
     fn from_env() -> SshResult<Self> {
-        let provider_name = env::var("LOYU_AI_PROVIDER")
+        let provider_name = env::var("ORBITTERM_AI_PROVIDER")
             .ok()
             .map(|v| v.trim().to_lowercase())
             .filter(|v| !v.is_empty())
@@ -92,43 +92,43 @@ impl AiRuntimeConfig {
 
         match provider_name.as_str() {
             "openai" => {
-                let api_key = pick_first_non_empty(&["OPENAI_API_KEY", "LOYU_AI_API_KEY"])
+                let api_key = pick_first_non_empty(&["OPENAI_API_KEY", "ORBITTERM_AI_API_KEY"])
                     .ok_or_else(|| {
                         SshBackendError::AiConfigMissing(
-                            "缺少 OPENAI_API_KEY（或 LOYU_AI_API_KEY）".to_string(),
+                            "缺少 OPENAI_API_KEY（或 ORBITTERM_AI_API_KEY）".to_string(),
                         )
                     })?;
                 Ok(Self {
                     provider: AiProvider::OpenAi,
                     provider_name,
-                    api_url: env_non_empty("LOYU_AI_API_URL")
+                    api_url: env_non_empty("ORBITTERM_AI_API_URL")
                         .unwrap_or_else(|| OPENAI_DEFAULT_URL.to_string()),
                     api_key: Some(api_key),
-                    model: env_non_empty("LOYU_AI_MODEL")
+                    model: env_non_empty("ORBITTERM_AI_MODEL")
                         .unwrap_or_else(|| OPENAI_DEFAULT_MODEL.to_string()),
                 })
             }
             "claude" => {
-                let api_key = pick_first_non_empty(&["ANTHROPIC_API_KEY", "LOYU_AI_API_KEY"])
+                let api_key = pick_first_non_empty(&["ANTHROPIC_API_KEY", "ORBITTERM_AI_API_KEY"])
                     .ok_or_else(|| {
                         SshBackendError::AiConfigMissing(
-                            "缺少 ANTHROPIC_API_KEY（或 LOYU_AI_API_KEY）".to_string(),
+                            "缺少 ANTHROPIC_API_KEY（或 ORBITTERM_AI_API_KEY）".to_string(),
                         )
                     })?;
                 Ok(Self {
                     provider: AiProvider::Claude,
                     provider_name,
-                    api_url: env_non_empty("LOYU_AI_API_URL")
+                    api_url: env_non_empty("ORBITTERM_AI_API_URL")
                         .unwrap_or_else(|| CLAUDE_DEFAULT_URL.to_string()),
                     api_key: Some(api_key),
-                    model: env_non_empty("LOYU_AI_MODEL")
+                    model: env_non_empty("ORBITTERM_AI_MODEL")
                         .unwrap_or_else(|| CLAUDE_DEFAULT_MODEL.to_string()),
                 })
             }
             "relay" => {
-                let api_url = env_non_empty("LOYU_AI_API_URL").ok_or_else(|| {
+                let api_url = env_non_empty("ORBITTERM_AI_API_URL").ok_or_else(|| {
                     SshBackendError::AiConfigMissing(
-                        "provider=relay 时必须配置 LOYU_AI_API_URL".to_string(),
+                        "provider=relay 时必须配置 ORBITTERM_AI_API_URL".to_string(),
                     )
                 })?;
 
@@ -136,13 +136,13 @@ impl AiRuntimeConfig {
                     provider: AiProvider::Relay,
                     provider_name,
                     api_url,
-                    api_key: pick_first_non_empty(&["LOYU_AI_API_KEY", "OPENAI_API_KEY"]),
-                    model: env_non_empty("LOYU_AI_MODEL")
+                    api_key: pick_first_non_empty(&["ORBITTERM_AI_API_KEY", "OPENAI_API_KEY"]),
+                    model: env_non_empty("ORBITTERM_AI_MODEL")
                         .unwrap_or_else(|| RELAY_DEFAULT_MODEL.to_string()),
                 })
             }
             _ => Err(SshBackendError::AiConfigMissing(
-                "LOYU_AI_PROVIDER 仅支持 openai / claude / relay".to_string(),
+                "ORBITTERM_AI_PROVIDER 仅支持 openai / claude / relay".to_string(),
             )),
         }
     }

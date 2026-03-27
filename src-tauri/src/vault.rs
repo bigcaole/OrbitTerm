@@ -19,7 +19,8 @@ use crate::e2ee::{
 use crate::models::{
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HostAdvancedOptions,
     HostAuthConfig, HostConfig, IdentityConfig, SaveVaultRequest, SaveVaultResponse,
-    UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
+    Snippet, UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse,
+    VaultSyncImportRequest,
 };
 
 const VAULT_FILENAME: &str = "vault.bin";
@@ -52,6 +53,8 @@ enum VaultError {
     InvalidHosts,
     #[error("金库身份列表格式无效")]
     InvalidIdentities,
+    #[error("金库指令列表格式无效")]
+    InvalidSnippets,
     #[error("金库尚未解锁")]
     VaultLocked,
     #[error("未找到可导出的加密金库")]
@@ -71,6 +74,7 @@ impl VaultError {
             Self::UnlockFailed => "主密码错误或金库校验失败。".to_string(),
             Self::InvalidHosts => "金库中的主机列表格式无效。".to_string(),
             Self::InvalidIdentities => "金库中的身份列表格式无效。".to_string(),
+            Self::InvalidSnippets => "金库中的快捷指令格式无效。".to_string(),
             Self::VaultLocked => "请先解锁金库再保存配置。".to_string(),
             Self::BackupSourceMissing => {
                 "未找到可导出的本地加密金库，请先完成一次解锁或保存。".to_string()
@@ -176,7 +180,7 @@ async fn unlock_and_load_inner(
     let encrypted = load_or_initialize_vault(app, master_password).await?;
     let derived_key = derive_session_key(master_password, &encrypted)?;
     let decrypted = decrypt_cloud_vault(master_password, &encrypted)?;
-    let (hosts, identities) = parse_hosts_and_identities(&decrypted)?;
+    let (hosts, identities, snippets) = parse_vault_data(&decrypted)?;
 
     let mut salt = [0_u8; 16];
     if encrypted.salt.len() != salt.len() {
@@ -208,6 +212,7 @@ async fn unlock_and_load_inner(
     Ok(UnlockAndLoadResponse {
         hosts,
         identities,
+        snippets,
         version: decrypted.version,
         updated_at: decrypted.updated_at,
     })
@@ -242,7 +247,8 @@ async fn save_vault_inner(
         updated_at: next_updated_at,
         data: json!({
             "hosts": request.hosts,
-            "identities": request.identities
+            "identities": request.identities,
+            "snippets": request.snippets
         }),
     };
 
@@ -353,7 +359,7 @@ async fn import_sync_blob_inner(
 
     let decrypted = decrypt_cloud_vault(master_password.as_str(), &encrypted)?;
     let derived_key = derive_session_key(master_password.as_str(), &encrypted)?;
-    let (hosts, identities) = parse_hosts_and_identities(&decrypted)?;
+    let (hosts, identities, snippets) = parse_vault_data(&decrypted)?;
 
     let mut salt = [0_u8; 16];
     if encrypted.salt.len() != salt.len() {
@@ -384,6 +390,7 @@ async fn import_sync_blob_inner(
     Ok(UnlockAndLoadResponse {
         hosts,
         identities,
+        snippets,
         version: decrypted.version,
         updated_at: decrypted.updated_at,
     })
@@ -425,7 +432,8 @@ async fn load_or_initialize_vault(
                         updated_at: now_unix_ts(),
                         data: json!({
                             "hosts": [],
-                            "identities": []
+                            "identities": [],
+                            "snippets": []
                         }),
                     };
 
@@ -495,18 +503,24 @@ struct LegacyHostConfig {
     advanced_options: HostAdvancedOptions,
 }
 
-fn parse_hosts_and_identities(
+fn parse_vault_data(
     vault: &CloudVault,
-) -> Result<(Vec<HostConfig>, Vec<IdentityConfig>), VaultError> {
+) -> Result<(Vec<HostConfig>, Vec<IdentityConfig>, Vec<Snippet>), VaultError> {
     let mut identities = match vault.data.get("identities") {
         Some(value) => serde_json::from_value::<Vec<IdentityConfig>>(value.clone())
             .map_err(|_| VaultError::InvalidIdentities)?,
         None => Vec::new(),
     };
 
+    let snippets = match vault.data.get("snippets") {
+        Some(value) => serde_json::from_value::<Vec<Snippet>>(value.clone())
+            .map_err(|_| VaultError::InvalidSnippets)?,
+        None => Vec::new(),
+    };
+
     let hosts_value = match vault.data.get("hosts") {
         Some(value) => value.clone(),
-        None => return Ok((Vec::new(), identities)),
+        None => return Ok((Vec::new(), identities, snippets)),
     };
 
     if let Ok(hosts) = serde_json::from_value::<Vec<HostConfig>>(hosts_value.clone()) {
@@ -518,7 +532,7 @@ fn parse_hosts_and_identities(
         if !all_linked {
             return Err(VaultError::InvalidIdentities);
         }
-        return Ok((hosts, identities));
+        return Ok((hosts, identities, snippets));
     }
 
     let legacy_hosts = serde_json::from_value::<Vec<LegacyHostConfig>>(hosts_value)
@@ -555,7 +569,7 @@ fn parse_hosts_and_identities(
         });
     }
 
-    Ok((migrated_hosts, identities))
+    Ok((migrated_hosts, identities, snippets))
 }
 
 fn next_identity_id(identities: &[IdentityConfig], preferred_id: &str) -> String {

@@ -36,6 +36,8 @@ pub enum SshBackendError {
     AiInvalidResponse,
     #[error("PTY 创建失败: {0}")]
     Pty(String),
+    #[error("远程命令执行失败: {0}")]
+    RemoteCommand(String),
     #[error("网络或系统错误: {0}")]
     Network(String),
     #[error("SSH 协议错误: {0}")]
@@ -63,6 +65,7 @@ impl SshBackendError {
             Self::AiService(_) => "AI_SERVICE_ERROR",
             Self::AiInvalidResponse => "AI_INVALID_RESPONSE",
             Self::Pty(_) => "PTY_ERROR",
+            Self::RemoteCommand(_) => "REMOTE_COMMAND_FAILED",
             Self::Network(_) => "NETWORK_ERROR",
             Self::Protocol(_) => "SSH_PROTOCOL_ERROR",
         }
@@ -92,6 +95,7 @@ impl SshBackendError {
                 "Orbit AI 返回的内容无法识别为命令，请重试或换一种说法。".to_string()
             }
             Self::Pty(detail) => format!("终端初始化失败：{detail}"),
+            Self::RemoteCommand(detail) => format!("远程命令执行失败：{detail}"),
             Self::Network(detail) => format!("网络异常：{detail}"),
             Self::Protocol(detail) => format!("SSH 协议异常：{detail}"),
         }

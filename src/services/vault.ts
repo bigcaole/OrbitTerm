@@ -1,9 +1,10 @@
 import { tauriInvoke } from './tauri';
-import type { HostConfig, IdentityConfig } from '../types/host';
+import type { HostConfig, IdentityConfig, Snippet } from '../types/host';
 
 export interface UnlockAndLoadResponse {
   hosts: HostConfig[];
   identities: IdentityConfig[];
+  snippets: Snippet[];
   version: number;
   updatedAt: number;
 }
@@ -36,12 +37,14 @@ export const unlockAndLoad = async (
 
 export const saveVault = async (
   hosts: HostConfig[],
-  identities: IdentityConfig[]
+  identities: IdentityConfig[],
+  snippets: Snippet[]
 ): Promise<SaveVaultResponse> => {
   return tauriInvoke<SaveVaultResponse>('save_vault', {
     request: {
       hosts,
-      identities
+      identities,
+      snippets
     }
   });
 };

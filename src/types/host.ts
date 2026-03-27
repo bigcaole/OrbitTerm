@@ -37,3 +37,10 @@ export interface HostConfig {
   identityId: string;
   advancedOptions: HostAdvancedOptions;
 }
+
+export interface Snippet {
+  id: string;
+  title: string;
+  command: string;
+  tags: string[];
+}
