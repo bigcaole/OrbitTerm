@@ -58,11 +58,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: cloud-sync-backend/go.mod
+          cache-dependency-path: cloud-sync-backend/go.sum
 
       - name: Go test
-        working-directory: cloud-sync-backend
-        run: go test ./...
+        run: cd cloud-sync-backend && go test ./...
 
       - name: Go vet
-        working-directory: cloud-sync-backend
-        run: go vet ./...
+        run: cd cloud-sync-backend && go vet ./...
