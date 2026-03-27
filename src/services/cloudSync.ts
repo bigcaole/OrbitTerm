@@ -130,6 +130,63 @@ const readJson = async <T>(response: Response, fallbackMessage: string): Promise
   return (await response.json()) as T;
 };
 
+const parseSyncVersion = (value: unknown, fallback = 0): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.trunc(value));
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return fallback;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, parsed);
+    }
+  }
+  return fallback;
+};
+
+const normalizeSyncPullResponse = (payload: unknown): SyncPullResponse => {
+  if (!payload || typeof payload !== 'object') {
+    return { hasData: false };
+  }
+  const raw = payload as Record<string, unknown>;
+  const hasData = raw.hasData === true;
+  const version = parseSyncVersion(raw.version, 0);
+  const encryptedBlobBase64 =
+    typeof raw.encryptedBlobBase64 === 'string' ? raw.encryptedBlobBase64 : undefined;
+  const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined;
+  if (!hasData) {
+    return {
+      hasData: false,
+      version,
+      updatedAt
+    };
+  }
+  return {
+    hasData: true,
+    version,
+    encryptedBlobBase64,
+    updatedAt
+  };
+};
+
+const normalizeSyncStatusResponse = (payload: unknown): SyncStatusResponse => {
+  if (!payload || typeof payload !== 'object') {
+    return {
+      hasData: false,
+      version: 0
+    };
+  }
+  const raw = payload as Record<string, unknown>;
+  return {
+    hasData: raw.hasData === true,
+    version: parseSyncVersion(raw.version, 0),
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined
+  };
+};
+
 const saveSession = (session: CloudSyncSession): void => {
   window.localStorage.setItem(CLOUD_SYNC_SESSION_KEY, JSON.stringify(session));
 };
@@ -280,21 +337,25 @@ export const pushCloudSyncBlob = async (
   request: SyncPushRequest
 ): Promise<SyncPushResponse> => {
   const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const normalizedVersion = parseSyncVersion(request.version, 0);
   const response = await withTimeout(`${endpoint}/sync/push`, {
     method: 'POST',
     headers: authHeaders(session.token),
-    body: JSON.stringify(request)
+    body: JSON.stringify({
+      version: normalizedVersion,
+      encryptedBlobBase64: request.encryptedBlobBase64
+    })
   });
   if (response.status === 409) {
     let message = '检测到版本冲突，请先拉取最新数据后重试。';
     let latest: SyncPullResponse | null = null;
     try {
-      const payload = (await response.json()) as { message?: string; latest?: SyncPullResponse };
+      const payload = (await response.json()) as { message?: string; latest?: unknown };
       if (payload.message) {
         message = payload.message;
       }
-      if (payload.latest) {
-        latest = payload.latest;
+      if (payload.latest !== undefined) {
+        latest = normalizeSyncPullResponse(payload.latest);
       }
     } catch (_error) {
       // Ignore parse errors and use fallback.
@@ -312,7 +373,8 @@ export const getCloudSyncStatus = async (session: CloudSyncSession): Promise<Syn
       Authorization: `Bearer ${session.token}`
     }
   });
-  return readJson<SyncStatusResponse>(response, '获取同步状态失败，请稍后重试。');
+  const payload = await readJson<unknown>(response, '获取同步状态失败，请稍后重试。');
+  return normalizeSyncStatusResponse(payload);
 };
 
 export const pullCloudSyncBlob = async (session: CloudSyncSession): Promise<SyncPullResponse> => {
@@ -323,7 +385,8 @@ export const pullCloudSyncBlob = async (session: CloudSyncSession): Promise<Sync
       Authorization: `Bearer ${session.token}`
     }
   });
-  return readJson<SyncPullResponse>(response, '同步拉取失败，请稍后重试。');
+  const payload = await readJson<unknown>(response, '同步拉取失败，请稍后重试。');
+  return normalizeSyncPullResponse(payload);
 };
 
 export const listCloudDevices = async (session: CloudSyncSession): Promise<CloudDeviceItem[]> => {

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -79,8 +80,8 @@ type authUserInfo struct {
 }
 
 type syncPushRequest struct {
-	Version             int64  `json:"version" binding:"required,min=0"`
-	EncryptedBlobBase64 string `json:"encryptedBlobBase64" binding:"required,min=32"`
+	Version             any    `json:"version"`
+	EncryptedBlobBase64 string `json:"encryptedBlobBase64"`
 }
 
 type syncPushResponse struct {
@@ -757,6 +758,36 @@ func (a *app) handleSyncStatus(c *gin.Context) {
 	})
 }
 
+func parseSyncPushVersion(raw any) (int64, error) {
+	switch v := raw.(type) {
+	case nil:
+		return 0, nil
+	case int:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+			return 0, errors.New("invalid version")
+		}
+		return int64(v), nil
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return parsed, nil
+	default:
+		return 0, errors.New("invalid version type")
+	}
+}
+
 func (a *app) handleSyncPush(c *gin.Context) {
 	userID := c.GetString("userID")
 	username := c.GetString("username")
@@ -774,8 +805,18 @@ func (a *app) handleSyncPush(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "同步参数无效，请检查版本号和数据。"})
 		return
 	}
+	reqVersion, versionErr := parseSyncPushVersion(req.Version)
+	if versionErr != nil || reqVersion < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "同步参数无效，请检查版本号和数据。"})
+		return
+	}
+	reqBlob := strings.TrimSpace(req.EncryptedBlobBase64)
+	if reqBlob == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "同步参数无效，请检查版本号和数据。"})
+		return
+	}
 
-	rawBlob, err := base64.StdEncoding.DecodeString(req.EncryptedBlobBase64)
+	rawBlob, err := base64.StdEncoding.DecodeString(reqBlob)
 	if err != nil || len(rawBlob) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "加密数据格式错误。"})
 		return
@@ -810,7 +851,7 @@ func (a *app) handleSyncPush(c *gin.Context) {
 		serverUpdatedAt,
 		userID,
 		username,
-		req.Version,
+		reqVersion,
 	).Scan(&acceptedVersion, &acceptedUpdatedAt)
 	if updateErr == nil {
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -835,7 +876,7 @@ func (a *app) handleSyncPush(c *gin.Context) {
 	}
 
 	if !latest.HasData {
-		if req.Version != 0 {
+		if reqVersion != 0 {
 			c.JSON(http.StatusConflict, syncConflictResponse{
 				Message: "云端版本已变化，请先拉取最新数据后再重试。",
 				Latest:  latest,
