@@ -30,7 +30,7 @@ import { SnippetsPanel } from './components/terminal/SnippetsPanel';
 import { SftpManager } from './components/sftp/SftpManager';
 import { TransferCenter } from './components/transfer/TransferCenter';
 import { AboutOrbitTermModal } from './components/settings/AboutOrbitTermModal';
-import { SettingsDrawer } from './components/settings/SettingsDrawer';
+import { SettingsDrawer, type SettingsCategory } from './components/settings/SettingsDrawer';
 import { useHostStore } from './store/useHostStore';
 import { useUiSettingsStore } from './store/useUiSettingsStore';
 import { useTransferStore } from './store/useTransferStore';
@@ -83,6 +83,17 @@ const darkPanelButtonClass =
 const SFTP_PANEL_MIN_WIDTH = 280;
 const SFTP_PANEL_MAX_WIDTH = 680;
 const IDLE_RELEASE_CHECK_MS = 5 * 60 * 1000;
+
+const SETTINGS_SECTION_CATEGORY_MAP: Record<string, SettingsCategory> = {
+  'settings-font': 'settings',
+  'settings-acrylic': 'settings',
+  'settings-theme': 'settings',
+  'settings-security': 'settings',
+  'settings-identity': 'files',
+  'settings-sync': 'profile',
+  'settings-devices': 'profile',
+  'settings-about': 'other'
+};
 
 const buildLocalDayLabel = (date: Date): string => {
   const year = date.getFullYear();
@@ -423,7 +434,11 @@ function App(): JSX.Element {
   const [commandPaletteActiveIndex, setCommandPaletteActiveIndex] = useState<number>(0);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('settings');
+  const [settingsFocusSectionId, setSettingsFocusSectionId] = useState<string | null>(null);
+  const [settingsFocusSequence, setSettingsFocusSequence] = useState<number>(0);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState<boolean>(false);
   const [dashboardSection, setDashboardSection] = useState<DashboardSection>('hosts');
   const [hostSearchQuery, setHostSearchQuery] = useState<string>('');
   const [activeTagFilter, setActiveTagFilter] = useState<string>('all');
@@ -539,6 +554,19 @@ function App(): JSX.Element {
     }
     return '同步已完成';
   }, [cloudSyncError, cloudSyncSession, isSyncingCloud]);
+  const accountDisplayName = useMemo(() => {
+    if (!cloudSyncSession?.email) {
+      return '本地用户';
+    }
+    return cloudSyncSession.email;
+  }, [cloudSyncSession]);
+  const accountAvatarText = useMemo(() => {
+    const source = cloudSyncSession?.email?.trim();
+    if (!source) {
+      return 'OT';
+    }
+    return source.slice(0, 2).toUpperCase();
+  }, [cloudSyncSession]);
 
   const editingHost = useMemo(() => {
     if (!editingHostId) {
@@ -619,6 +647,7 @@ function App(): JSX.Element {
   const previousSessionCountRef = useRef<number>(activeSessions.length);
   const terminalSplitRef = useRef<HTMLElement | null>(null);
   const syncIndicatorRef = useRef<HTMLDivElement | null>(null);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const hostSearchInputRef = useRef<HTMLInputElement | null>(null);
   const splitWorkspacesRef = useRef<Record<string, TabSplitWorkspace>>(splitWorkspaces);
   const manualDetachedClosingRef = useRef<Set<string>>(new Set());
@@ -660,25 +689,21 @@ function App(): JSX.Element {
     });
   }, [activeTagFilter, hostSearchQuery, hosts]);
 
-  const openSettingsSection = useCallback((sectionId: string): void => {
+  const openSettingsCategory = useCallback((category: SettingsCategory): void => {
+    setSettingsCategory(category);
+    setSettingsFocusSectionId(null);
+    setSettingsFocusSequence((prev) => prev + 1);
     setIsSettingsOpen(true);
-    let attempts = 0;
-    const maxAttempts = 10;
-    const tryScroll = (): void => {
-      const target = document.getElementById(sectionId);
-      if (target) {
-        target.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start'
-        });
-        return;
-      }
-      attempts += 1;
-      if (attempts < maxAttempts) {
-        window.setTimeout(tryScroll, 45);
-      }
-    };
-    window.setTimeout(tryScroll, 20);
+    setIsProfileMenuOpen(false);
+  }, []);
+
+  const openSettingsSection = useCallback((sectionId: string): void => {
+    const category = SETTINGS_SECTION_CATEGORY_MAP[sectionId] ?? 'settings';
+    setSettingsCategory(category);
+    setSettingsFocusSectionId(sectionId);
+    setSettingsFocusSequence((prev) => prev + 1);
+    setIsSettingsOpen(true);
+    setIsProfileMenuOpen(false);
   }, []);
 
   const commandPaletteRuntimeItems = useMemo<PaletteRuntimeItem[]>(() => {
@@ -984,7 +1009,11 @@ function App(): JSX.Element {
 
       if (key === ',') {
         event.preventDefault();
-        setIsSettingsOpen((prev) => !prev);
+        if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+        } else {
+          openSettingsCategory('settings');
+        }
       }
 
       if (key === 'f') {
@@ -1001,7 +1030,7 @@ function App(): JSX.Element {
     return () => {
       window.removeEventListener('keydown', handler);
     };
-  }, [appView, closeTerminal, isCommandPaletteOpen]);
+  }, [appView, closeTerminal, isCommandPaletteOpen, isSettingsOpen, openSettingsCategory]);
 
   useEffect(() => {
     if (activeTagFilter === 'all') {
@@ -1268,6 +1297,37 @@ function App(): JSX.Element {
       window.removeEventListener('mousedown', handlePointerDown);
     };
   }, [isSyncPopoverOpen]);
+
+  useEffect(() => {
+    if (!isProfileMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent): void => {
+      const root = profileMenuRef.current;
+      if (!root) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (!root.contains(target)) {
+        setIsProfileMenuOpen(false);
+      }
+    };
+
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isProfileMenuOpen]);
+
+  useEffect(() => {
+    if (isSettingsOpen) {
+      setIsProfileMenuOpen(false);
+    }
+  }, [isSettingsOpen]);
 
   const detectDownloadableRelease = useCallback(async (): Promise<void> => {
     const checkedAt = new Date().toISOString();
@@ -2076,6 +2136,7 @@ function App(): JSX.Element {
                   className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white/90 px-2.5 py-1.5 text-xs text-slate-700 hover:bg-white"
                   onClick={() => {
                     setIsSyncPopoverOpen((prev) => !prev);
+                    setIsProfileMenuOpen(false);
                   }}
                   title={`上次同步：${syncLastText}`}
                   type="button"
@@ -2141,24 +2202,111 @@ function App(): JSX.Element {
                   </div>
                 )}
               </div>
-              <button
-                className={toolbarButtonClass}
-                onClick={() => {
-                  setIsSettingsOpen(true);
-                }}
-                type="button"
-              >
-                设置中心 (Cmd/Ctrl+,)
-              </button>
-              <button
-                className={toolbarButtonClass}
-                onClick={() => {
-                  setIsAboutOpen(true);
-                }}
-                type="button"
-              >
-                关于轨连终端
-              </button>
+              <div className="relative" ref={profileMenuRef}>
+                <button
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white/90 px-2 py-1.5 text-xs text-slate-700 hover:bg-white"
+                  onClick={() => {
+                    setIsProfileMenuOpen((prev) => !prev);
+                    setIsSyncPopoverOpen(false);
+                  }}
+                  type="button"
+                >
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[#8fb1df] bg-[#285793] text-[11px] font-semibold text-white">
+                    {accountAvatarText}
+                  </span>
+                  <span className="hidden max-w-[140px] truncate sm:inline">{accountDisplayName}</span>
+                </button>
+
+                {isProfileMenuOpen && (
+                  <div className="absolute right-0 top-[calc(100%+8px)] z-30 w-72 rounded-xl border border-slate-200 bg-white/95 p-2 shadow-xl backdrop-blur">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2">
+                      <p className="truncate text-xs font-semibold text-slate-800">{accountDisplayName}</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        {cloudSyncSession ? '私有云已连接' : '私有云未连接'}
+                      </p>
+                    </div>
+
+                    <div className="mt-2 space-y-1.5">
+                      <p className="px-1 text-[11px] font-semibold text-slate-500">个人信息</p>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsSection('settings-sync');
+                        }}
+                        type="button"
+                      >
+                        账号与同步
+                      </button>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsSection('settings-devices');
+                        }}
+                        type="button"
+                      >
+                        登录设备管理
+                      </button>
+                    </div>
+
+                    <div className="mt-2 space-y-1.5">
+                      <p className="px-1 text-[11px] font-semibold text-slate-500">设置</p>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsSection('settings-font');
+                        }}
+                        type="button"
+                      >
+                        字体与外观
+                      </button>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsSection('settings-theme');
+                        }}
+                        type="button"
+                      >
+                        主题与安全
+                      </button>
+                    </div>
+
+                    <div className="mt-2 space-y-1.5">
+                      <p className="px-1 text-[11px] font-semibold text-slate-500">文件</p>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsSection('settings-identity');
+                        }}
+                        type="button"
+                      >
+                        身份与 SSH 密钥
+                      </button>
+                    </div>
+
+                    <div className="mt-2 space-y-1.5">
+                      <p className="px-1 text-[11px] font-semibold text-slate-500">其他</p>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsSection('settings-about');
+                        }}
+                        type="button"
+                      >
+                        关于 OrbitTerm
+                      </button>
+                      <button
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          openSettingsCategory('settings');
+                        }}
+                        type="button"
+                      >
+                        打开设置中心 (Cmd/Ctrl+,)
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2907,8 +3055,16 @@ function App(): JSX.Element {
         activeTerminalHostId={activeTerminalHostId}
         activeTerminalSessionId={activeTerminalSessionId}
         activeTerminalTitle={activeTerminalTitle}
+        activeCategory={settingsCategory}
+        focusSectionId={settingsFocusSectionId}
+        focusSequence={settingsFocusSequence}
         onClose={() => {
           setIsSettingsOpen(false);
+        }}
+        onCategoryChange={(category) => {
+          setSettingsCategory(category);
+          setSettingsFocusSectionId(null);
+          setSettingsFocusSequence((prev) => prev + 1);
         }}
         onOpenAbout={() => {
           setIsAboutOpen(true);

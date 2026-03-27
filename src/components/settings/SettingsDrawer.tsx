@@ -18,10 +18,23 @@ interface SettingsDrawerProps {
   open: boolean;
   onClose: () => void;
   onOpenAbout: () => void;
+  activeCategory: SettingsCategory;
+  onCategoryChange: (category: SettingsCategory) => void;
+  focusSectionId: string | null;
+  focusSequence: number;
   activeTerminalSessionId: string | null;
   activeTerminalHostId: string | null;
   activeTerminalTitle: string | null;
 }
+
+export type SettingsCategory = 'profile' | 'settings' | 'files' | 'other';
+
+const SETTINGS_CATEGORY_OPTIONS: ReadonlyArray<{ id: SettingsCategory; label: string }> = [
+  { id: 'profile', label: '个人信息' },
+  { id: 'settings', label: '设置' },
+  { id: 'files', label: '文件' },
+  { id: 'other', label: '其他' }
+];
 
 const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
   {
@@ -70,6 +83,10 @@ export function SettingsDrawer({
   open,
   onClose,
   onOpenAbout,
+  activeCategory,
+  onCategoryChange,
+  focusSectionId,
+  focusSequence,
   activeTerminalSessionId,
   activeTerminalHostId,
   activeTerminalTitle
@@ -182,6 +199,26 @@ export function SettingsDrawer({
     return Boolean(activeTerminalSessionId && activeSessionIdentity?.authConfig.method === 'password');
   }, [activeSessionIdentity, activeTerminalSessionId]);
 
+  const accountDisplay = useMemo(() => {
+    if (!cloudSyncSession?.email) {
+      return '本地离线模式';
+    }
+    return cloudSyncSession.email;
+  }, [cloudSyncSession]);
+
+  const accountAvatar = useMemo(() => {
+    const source = cloudSyncSession?.email?.trim();
+    if (!source) {
+      return 'OT';
+    }
+    return source.slice(0, 2).toUpperCase();
+  }, [cloudSyncSession]);
+
+  const showProfileCategory = activeCategory === 'profile';
+  const showSettingsCategory = activeCategory === 'settings';
+  const showFilesCategory = activeCategory === 'files';
+  const showOtherCategory = activeCategory === 'other';
+
   const formatRelativeOnline = (isoText: string): string => {
     const date = new Date(isoText);
     if (Number.isNaN(date.getTime())) {
@@ -203,6 +240,29 @@ export function SettingsDrawer({
   const authMethodLabel = (method: AuthMethod): string => {
     return method === 'password' ? '密码认证' : '私钥认证';
   };
+
+  useEffect(() => {
+    if (!open || !focusSectionId) {
+      return;
+    }
+    let attempts = 0;
+    const maxAttempts = 10;
+    const tryScroll = (): void => {
+      const target = document.getElementById(focusSectionId);
+      if (target) {
+        target.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        });
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) {
+        window.setTimeout(tryScroll, 45);
+      }
+    };
+    window.setTimeout(tryScroll, 20);
+  }, [focusSectionId, focusSequence, open, activeCategory]);
 
   const handleGenerateIdentityKeypair = async (): Promise<void> => {
     const normalizedName = identityNameInput.trim();
@@ -346,7 +406,39 @@ export function SettingsDrawer({
         </div>
 
         <div className="mt-5 space-y-5">
-          <section
+          <section className="rounded-xl border border-[#bfd5f7] bg-[#e9f2ff] p-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#8ab1e8] bg-[#2a5b9f] text-sm font-semibold text-white">
+                {accountAvatar}
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{accountDisplay}</p>
+                <p className="text-[11px] text-slate-600">
+                  {cloudSyncSession ? '云同步账号已登录' : '尚未登录云同步账号'}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {SETTINGS_CATEGORY_OPTIONS.map((item) => (
+                <button
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                    activeCategory === item.id
+                      ? 'border-[#2f6df4] bg-[#dce9ff] text-[#1f4e8f]'
+                      : 'border-[#c2d6f2] bg-white/85 text-slate-700 hover:bg-white'
+                  }`}
+                  key={item.id}
+                  onClick={() => onCategoryChange(item.id)}
+                  type="button"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {showSettingsCategory && (
+            <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-font"
           >
@@ -383,9 +475,11 @@ export function SettingsDrawer({
               type="range"
               value={terminalFontSize}
             />
-          </section>
+            </section>
+          )}
 
-          <section
+          {showSettingsCategory && (
+            <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-acrylic"
           >
@@ -463,9 +557,11 @@ export function SettingsDrawer({
                 value={acrylicBrightness}
               />
             </div>
-          </section>
+            </section>
+          )}
 
-          <section
+          {showSettingsCategory && (
+            <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-theme"
           >
@@ -487,9 +583,11 @@ export function SettingsDrawer({
                 </button>
               ))}
             </div>
-          </section>
+            </section>
+          )}
 
-          <section
+          {showSettingsCategory && (
+            <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-security"
           >
@@ -519,9 +617,11 @@ export function SettingsDrawer({
                 value={autoLockMinutes}
               />
             </div>
-          </section>
+            </section>
+          )}
 
-          <section
+          {showFilesCategory && (
+            <section
             className="scroll-mt-20 space-y-3 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-identity"
           >
@@ -695,9 +795,11 @@ export function SettingsDrawer({
                 )}
               </div>
             </div>
-          </section>
+            </section>
+          )}
 
-          <section
+          {showProfileCategory && (
+            <section
             className="scroll-mt-20 space-y-3 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-sync"
           >
@@ -824,9 +926,11 @@ export function SettingsDrawer({
                 {cloudSyncError}
               </p>
             ) : null}
-          </section>
+            </section>
+          )}
 
-          <section
+          {showProfileCategory && (
+            <section
             className="scroll-mt-20 space-y-3 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-devices"
           >
@@ -908,9 +1012,11 @@ export function SettingsDrawer({
                 </button>
               </>
             )}
-          </section>
+            </section>
+          )}
 
-          <section
+          {showOtherCategory && (
+            <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-about"
           >
@@ -923,7 +1029,14 @@ export function SettingsDrawer({
             >
               关于轨连终端
             </button>
-          </section>
+            </section>
+          )}
+
+          {!showProfileCategory && !showSettingsCategory && !showFilesCategory && !showOtherCategory && (
+            <p className="rounded-lg border border-dashed border-slate-300 bg-white/70 px-3 py-2 text-xs text-slate-500">
+              未识别分类，请重新选择。
+            </p>
+          )}
         </div>
       </aside>
     </div>
