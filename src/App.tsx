@@ -1484,24 +1484,6 @@ function App(): JSX.Element {
     };
   }, [appView, autoLockEnabled, detectDownloadableRelease]);
 
-  if (!hasCompletedOnboarding) {
-    return (
-      <>
-        <FirstRunOnboarding />
-        <Toaster closeButton expand position="top-right" richColors />
-      </>
-    );
-  }
-
-  if (appView === 'locked') {
-    return (
-      <>
-        <UnlockScreen />
-        <Toaster closeButton expand position="top-right" richColors />
-      </>
-    );
-  }
-
   const sendCommandToTerminal = async (command: string, execute = false): Promise<void> => {
     if (!command.trim()) {
       return;
@@ -2056,6 +2038,24 @@ function App(): JSX.Element {
       toast.error(message || fallback);
     });
   };
+
+  if (!hasCompletedOnboarding) {
+    return (
+      <>
+        <FirstRunOnboarding />
+        <Toaster closeButton expand position="top-right" richColors />
+      </>
+    );
+  }
+
+  if (appView === 'locked') {
+    return (
+      <>
+        <UnlockScreen />
+        <Toaster closeButton expand position="top-right" richColors />
+      </>
+    );
+  }
 
   return (
     <main className="h-screen w-screen overflow-hidden p-3 sm:p-4">
