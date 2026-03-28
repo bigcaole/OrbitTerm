@@ -27,14 +27,15 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
   <title>OrbitTerm 初始化向导</title>
   <style>
     :root {
-      --bg: #f2f8ff;
-      --card: #ffffff;
-      --line: #c5d7ef;
-      --text: #1f334d;
-      --muted: #5d7390;
-      --brand: #2f6df5;
-      --danger: #d84d4d;
-      --ok: #2b9b63;
+      --bg: #edf3ef;
+      --bg-alt: #e7eeea;
+      --card: #fbfdfc;
+      --line: #d5e0da;
+      --text: #22312b;
+      --muted: #61726d;
+      --brand: #4f7f74;
+      --danger: #b25b5b;
+      --ok: #2f775f;
     }
     * { box-sizing: border-box; }
     body {
@@ -42,9 +43,9 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at 10% 0%, #ddebff 0%, transparent 40%),
-        radial-gradient(circle at 90% 0%, #d6f9ef 0%, transparent 35%),
-        var(--bg);
+        radial-gradient(circle at 12% 0%, #dfe8e3 0%, transparent 42%),
+        radial-gradient(circle at 92% 8%, #dbe7e1 0%, transparent 40%),
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 52%, #f1f6f3 100%);
       min-height: 100vh;
       display: grid;
       place-items: center;
@@ -55,14 +56,14 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       border: 1px solid var(--line);
       border-radius: 18px;
       background: var(--card);
-      box-shadow: 0 14px 40px rgba(31, 71, 122, .13);
+      box-shadow: 0 10px 30px rgba(48, 79, 66, .09);
       padding: 22px;
     }
     .hero {
-      border: 1px solid #d0e2ff;
+      border: 1px solid #cfded8;
       border-radius: 14px;
       padding: 14px;
-      background: linear-gradient(120deg, #edf5ff 0%, #f7fffc 100%);
+      background: linear-gradient(120deg, #f1f7f4 0%, #f8fcfa 100%);
       margin-bottom: 14px;
     }
     h1 { margin: 0; font-size: 22px; }
@@ -75,14 +76,14 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       font-size: 13px;
     }
     .error {
-      border: 1px solid #efc1c1;
-      color: #9f2d2d;
-      background: #fff3f3;
+      border: 1px solid #e8c1be;
+      color: #8b3b3b;
+      background: #fff2f1;
     }
     .notice {
-      border: 1px solid #bce3cf;
-      color: #176741;
-      background: #f2fff8;
+      border: 1px solid #b7dbc7;
+      color: #26694f;
+      background: #edf8f2;
     }
     .grid {
       display: grid;
@@ -93,22 +94,23 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
     label {
       display: block;
       font-size: 12px;
-      color: #47617f;
+      color: #3f5851;
       margin-bottom: 8px;
     }
     input[type=text], input[type=password], input[type=number] {
       width: 100%;
-      border: 1px solid #b9cee9;
+      border: 1px solid #bfcec8;
       border-radius: 10px;
       padding: 9px 10px;
       font-size: 14px;
-      color: #12243a;
-      background: #f9fcff;
+      color: #1f302a;
+      background: #f9fcfa;
       outline: none;
     }
     input:focus {
-      border-color: #73a5f2;
+      border-color: #77a79a;
       background: #ffffff;
+      box-shadow: 0 0 0 3px rgba(110, 153, 139, .14);
     }
     .row {
       display: flex;
@@ -118,8 +120,8 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       margin: 8px 0;
       padding: 10px;
       border-radius: 10px;
-      border: 1px solid #d7e5f7;
-      background: #f8fbff;
+      border: 1px solid #d5e2dc;
+      background: #f6faf8;
       font-size: 13px;
     }
     .actions {
@@ -129,9 +131,9 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       gap: 8px;
     }
     button {
-      border: 1px solid #2d63d9;
+      border: 1px solid #63897c;
       background: var(--brand);
-      color: #fff;
+      color: #f5fbf8;
       border-radius: 10px;
       padding: 10px 13px;
       font-weight: 600;
@@ -139,7 +141,7 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       font-size: 14px;
     }
     button:hover {
-      background: #2254c9;
+      background: #3f6f64;
     }
     @media (max-width: 700px) {
       .grid { grid-template-columns: 1fr; }

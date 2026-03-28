@@ -37,23 +37,70 @@ var adminAuditPageTemplate = template.Must(template.New("admin-audit-page").Pars
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OrbitTerm 审计日志</title>
   <style>
-    body { margin:0; background:#f2f8ff; color:#17314c; font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif; }
-    .wrap { width:min(1200px,96vw); margin:22px auto 34px; }
-    .top { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
-    .top a { color:#2f63d0; text-decoration:none; }
-    .card { border:1px solid #c8daf4; background:#fff; border-radius:14px; padding:14px; box-shadow:0 10px 28px rgba(28,62,107,.08); }
+    :root {
+      --bg: #edf3ef;
+      --bg-alt: #e7eeea;
+      --panel: #fbfdfc;
+      --line: #d5e0da;
+      --text: #22312b;
+      --muted: #61726d;
+      --accent: #3d6f64;
+      --accent-2: #4f7f74;
+      --danger: #b25b5b;
+      --notice-soft: #edf8f2;
+      --danger-soft: #fff2f1;
+    }
+    body {
+      margin:0;
+      background:
+        radial-gradient(circle at 12% 0%, #dfe8e3 0%, transparent 42%),
+        radial-gradient(circle at 92% 8%, #dbe7e1 0%, transparent 40%),
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 52%, #f1f6f3 100%);
+      color:var(--text);
+      font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    .wrap { width:min(1220px,96vw); margin:20px auto 34px; }
+    .top {
+      position: sticky;
+      top: 10px;
+      z-index: 4;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      margin-bottom:14px;
+      background:rgba(251,253,252,.86);
+      backdrop-filter:blur(8px);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:12px 14px;
+      box-shadow:0 6px 18px rgba(49,76,67,.07);
+    }
+    .top a {
+      color:#2f6055;
+      text-decoration:none;
+      border:1px solid #c5d6cf;
+      border-radius:999px;
+      background:#f4f9f6;
+      padding:5px 11px;
+      font-size:12px;
+    }
+    .top a:hover { background:#eaf4ef; color:#234e45; }
+    .card { border:1px solid var(--line); background:var(--panel); border-radius:16px; padding:16px; box-shadow:0 8px 24px rgba(48,79,66,.08); }
     h1,h2 { margin:0 0 8px; }
-    h1 { font-size:20px; }
-    .muted { color:#5b7593; font-size:12px; line-height:1.6; }
+    h1 { font-size:22px; }
+    h2 { color:#2f433e; font-size:15px; }
+    .muted { color:var(--muted); font-size:12px; line-height:1.6; }
     .notice,.error { border-radius:10px; padding:9px 11px; margin-bottom:10px; font-size:13px; }
-    .notice { border:1px solid #bfe3cc; background:#f3fff8; color:#186a44; }
-    .error { border:1px solid #efc4c4; background:#fff4f4; color:#9a3232; }
+    .notice { border:1px solid #b7dbc7; background:var(--notice-soft); color:#26694f; }
+    .error { border:1px solid #e8c1be; background:var(--danger-soft); color:#8b3b3b; }
     table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
-    th,td { text-align:left; border-bottom:1px solid #dbe6f6; padding:8px 6px; vertical-align:top; }
-    th { color:#3d5e84; }
-    .ok { color:#147a4a; font-weight:600; }
-    .fail { color:#a03939; font-weight:600; }
-    @media (max-width: 980px) { table { display:block; overflow:auto; white-space:nowrap; } }
+    th,td { text-align:left; border-bottom:1px solid #dce8e2; padding:9px 7px; vertical-align:top; }
+    th { color:#45655d; background:#f4f8f6; position:sticky; top:0; }
+    tbody tr:hover td { background:#f8fbf9; }
+    .ok { color:#2f775f; font-weight:600; }
+    .fail { color:#b25b5b; font-weight:600; }
+    @media (max-width: 980px) { table { display:block; overflow:auto; white-space:nowrap; } .top { position: static; } }
   </style>
 </head>
 <body>

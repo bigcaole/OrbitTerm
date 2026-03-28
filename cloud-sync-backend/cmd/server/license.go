@@ -93,35 +93,95 @@ var adminLicensePageTemplate = template.Must(template.New("admin-license-page").
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OrbitTerm 激活码管理</title>
   <style>
-    body { margin:0; font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif; background:#f1f7ff; color:#153048; }
-    .wrap { width:min(1160px,96vw); margin:22px auto 36px; }
-    .card { background:#fff; border:1px solid #c6d9f5; border-radius:14px; padding:14px; box-shadow: 0 10px 30px rgba(31,71,122,.08); }
-    .top { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
-    .top a { color:#2f66d3; text-decoration:none; }
+    :root {
+      --bg: #edf3ef;
+      --bg-alt: #e7eeea;
+      --panel: #fbfdfc;
+      --line: #d5e0da;
+      --text: #22312b;
+      --muted: #61726d;
+      --accent: #3d6f64;
+      --accent-2: #4f7f74;
+      --danger: #b25b5b;
+      --notice-soft: #edf8f2;
+      --danger-soft: #fff2f1;
+    }
+    body {
+      margin:0;
+      font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif;
+      background:
+        radial-gradient(circle at 12% 0%, #dfe8e3 0%, transparent 42%),
+        radial-gradient(circle at 92% 8%, #dbe7e1 0%, transparent 40%),
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 52%, #f1f6f3 100%);
+      color:var(--text);
+    }
+    .wrap { width:min(1180px,96vw); margin:20px auto 36px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 8px 24px rgba(48,79,66,.08); }
+    .top {
+      position: sticky;
+      top: 10px;
+      z-index: 4;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      margin-bottom:14px;
+      background:rgba(251,253,252,.86);
+      backdrop-filter:blur(8px);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:12px 14px;
+      box-shadow:0 6px 18px rgba(49,76,67,.07);
+    }
+    .top a {
+      color:#2f6055;
+      text-decoration:none;
+      border:1px solid #c5d6cf;
+      border-radius:999px;
+      background:#f4f9f6;
+      padding:5px 11px;
+      font-size:12px;
+    }
+    .top a:hover { background:#eaf4ef; color:#234e45; }
     h1,h2 { margin:0 0 8px; }
-    h1 { font-size:20px; }
-    h2 { font-size:15px; }
-    .muted { color:#5f7793; font-size:12px; }
-    .grid { display:grid; gap:12px; grid-template-columns:1fr 1fr; margin-top:12px; }
+    h1 { font-size:22px; }
+    h2 { font-size:15px; color:#2f433e; }
+    .muted { color:var(--muted); font-size:12px; line-height:1.6; }
+    .grid { display:grid; gap:14px; grid-template-columns:1.05fr .95fr; margin-top:12px; }
     .notice,.error { border-radius:10px; padding:9px 11px; margin-bottom:10px; font-size:13px; }
-    .notice { border:1px solid #bde5cd; background:#f2fff8; color:#176a43; }
-    .error { border:1px solid #efc0c0; background:#fff4f4; color:#9b3232; }
+    .notice { border:1px solid #b7dbc7; background:var(--notice-soft); color:#26694f; }
+    .error { border:1px solid #e8c1be; background:var(--danger-soft); color:#8b3b3b; }
     .generated { white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.65; }
     .fields { display:grid; gap:10px; }
-    label { display:block; color:#486481; font-size:12px; }
+    label { display:block; color:#3f5851; font-size:12px; }
     input,select {
-      width:100%; border:1px solid #b6cbea; border-radius:8px; background:#f8fbff; color:#12283f;
+      width:100%; border:1px solid #bfcec8; border-radius:10px; background:#f9fcfa; color:#1f302a;
       padding:8px 9px; font-size:13px; outline:none;
     }
-    input:focus,select:focus { border-color:#6fa3ef; background:#fff; }
-    button { border:1px solid #325faa; background:#2f66d3; color:#fff; border-radius:8px; padding:8px 11px; cursor:pointer; font-size:13px; font-weight:600; }
-    button:hover { background:#2654b3; }
-    button.danger { border-color:#a44b4b; background:#ba5757; }
+    input:focus,select:focus {
+      border-color:#77a79a;
+      background:#fff;
+      box-shadow:0 0 0 3px rgba(110,153,139,.14);
+    }
+    button {
+      border:1px solid #63897c;
+      background:#4f7f74;
+      color:#f5fbf8;
+      border-radius:10px;
+      padding:8px 11px;
+      cursor:pointer;
+      font-size:13px;
+      font-weight:600;
+    }
+    button:hover { background:#3f6f64; }
+    button.danger { border-color:#b47070; background:#ca8888; color:#fff7f7; }
+    button.danger:hover { background:#b97676; }
     table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
-    th,td { text-align:left; border-bottom:1px solid #dbe6f6; padding:8px 6px; vertical-align:top; }
-    th { color:#3d5e84; }
-    .pill { display:inline-block; border-radius:999px; border:1px solid #b9cfee; background:#f5f9ff; padding:2px 8px; font-size:11px; color:#406188; }
-    @media (max-width:980px) { .grid { grid-template-columns:1fr; } table { display:block; overflow:auto; white-space:nowrap; } }
+    th,td { text-align:left; border-bottom:1px solid #dce8e2; padding:9px 7px; vertical-align:top; }
+    th { color:#45655d; background:#f4f8f6; position:sticky; top:0; }
+    tbody tr:hover td { background:#f8fbf9; }
+    .pill { display:inline-block; border-radius:999px; border:1px solid #bfd1ca; background:#e5efeb; padding:3px 9px; font-size:11px; color:#406159; }
+    @media (max-width:980px) { .grid { grid-template-columns:1fr; } table { display:block; overflow:auto; white-space:nowrap; } .top{position:static;} }
   </style>
 </head>
 <body>

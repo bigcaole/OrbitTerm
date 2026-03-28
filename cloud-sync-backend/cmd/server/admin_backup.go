@@ -89,34 +89,83 @@ const adminBackupPageTemplate = `<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OrbitTerm 备份与恢复</title>
   <style>
-    body { margin:0; background:#f2f8ff; color:#17314c; font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif; }
-    .wrap { width:min(1100px,96vw); margin:22px auto 34px; }
-    .top { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
-    .top a { color:#2f63d0; text-decoration:none; }
-    .card { border:1px solid #c8daf4; background:#fff; border-radius:14px; padding:14px; box-shadow: 0 10px 28px rgba(28,62,107,.08); }
+    :root {
+      --bg: #edf3ef;
+      --bg-alt: #e7eeea;
+      --panel: #fbfdfc;
+      --line: #d5e0da;
+      --text: #22312b;
+      --muted: #61726d;
+      --accent: #3d6f64;
+      --accent-2: #4f7f74;
+      --danger: #b25b5b;
+      --notice-soft: #edf8f2;
+      --danger-soft: #fff2f1;
+    }
+    body {
+      margin:0;
+      background:
+        radial-gradient(circle at 12% 0%, #dfe8e3 0%, transparent 42%),
+        radial-gradient(circle at 92% 8%, #dbe7e1 0%, transparent 40%),
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 52%, #f1f6f3 100%);
+      color:var(--text);
+      font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    .wrap { width:min(1120px,96vw); margin:20px auto 34px; }
+    .top {
+      position: sticky;
+      top: 10px;
+      z-index: 4;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      margin-bottom:14px;
+      background:rgba(251,253,252,.86);
+      backdrop-filter:blur(8px);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:12px 14px;
+      box-shadow:0 6px 18px rgba(49,76,67,.07);
+    }
+    .top a {
+      color:#2f6055;
+      text-decoration:none;
+      border:1px solid #c5d6cf;
+      border-radius:999px;
+      background:#f4f9f6;
+      padding:5px 11px;
+      font-size:12px;
+    }
+    .top a:hover { background:#eaf4ef; color:#234e45; }
+    .card { border:1px solid var(--line); background:var(--panel); border-radius:16px; padding:16px; box-shadow: 0 8px 24px rgba(48,79,66,.08); }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
     h1,h2 { margin:0 0 8px; }
-    h1 { font-size:20px; }
-    h2 { font-size:15px; }
-    .muted { color:#5b7593; font-size:12px; line-height:1.6; }
+    h1 { font-size:22px; }
+    h2 { font-size:15px; color:#2f433e; }
+    .muted { color:var(--muted); font-size:12px; line-height:1.6; }
     .notice,.error { border-radius:10px; padding:9px 11px; margin-bottom:10px; font-size:13px; }
-    .notice { border:1px solid #bfe3cc; background:#f3fff8; color:#186a44; }
-    .error { border:1px solid #efc4c4; background:#fff4f4; color:#9a3232; }
+    .notice { border:1px solid #b7dbc7; background:var(--notice-soft); color:#26694f; }
+    .error { border:1px solid #e8c1be; background:var(--danger-soft); color:#8b3b3b; }
     textarea {
-      width:100%; min-height:320px; resize:vertical; border:1px solid #b9cdea; border-radius:10px;
-      padding:9px 10px; font-size:12px; line-height:1.5; background:#f8fbff; color:#16324f; outline:none;
+      width:100%; min-height:320px; resize:vertical; border:1px solid #bfcec8; border-radius:10px;
+      padding:9px 10px; font-size:12px; line-height:1.5; background:#f9fcfa; color:#1f302a; outline:none;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    textarea:focus { border-color:#6fa2ee; background:#fff; }
+    textarea:focus {
+      border-color:#77a79a;
+      background:#fff;
+      box-shadow:0 0 0 3px rgba(110,153,139,.14);
+    }
     button {
-      border:1px solid #2f63cf; border-radius:9px; background:#2f63cf; color:#fff;
+      border:1px solid #63897c; border-radius:9px; background:#4f7f74; color:#f5fbf8;
       font-size:13px; font-weight:600; padding:9px 12px; cursor:pointer;
     }
-    button:hover { background:#2554b2; }
-    .danger { border-color:#a94d4d; background:#bd5959; }
-    .danger:hover { background:#a84a4a; }
+    button:hover { background:#3f6f64; }
+    .danger { border-color:#b47070; background:#ca8888; color:#fff7f7; }
+    .danger:hover { background:#b97676; }
     .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
-    @media (max-width: 960px) { .grid { grid-template-columns:1fr; } }
+    @media (max-width: 960px) { .grid { grid-template-columns:1fr; } .top { position: static; } }
   </style>
 </head>
 <body>

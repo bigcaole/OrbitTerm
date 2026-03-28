@@ -89,65 +89,101 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
   <title>OrbitTerm 管理台</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #050910;
-      --panel: #0d1420;
-      --panel-soft: #141f31;
-      --line: #2c3c55;
-      --text: #e6edf8;
-      --muted: #9db1cf;
-      --ok: #5fd4a0;
-      --danger: #ff8f8f;
-      --accent: #7fb1ff;
+      --bg: #edf3ef;
+      --bg-alt: #e7eeea;
+      --panel: #fbfdfc;
+      --line: #d5e0da;
+      --text: #22312b;
+      --muted: #61726d;
+      --ok: #2f775f;
+      --danger: #b25b5b;
+      --accent: #3d6f64;
+      --accent-2: #4f7f74;
+      --accent-soft: #e5efeb;
+      --danger-soft: #fff2f1;
+      --notice-soft: #edf8f2;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: radial-gradient(circle at 20% 0%, #152742 0%, var(--bg) 55%);
+      background:
+        radial-gradient(circle at 12% 0%, #dfe8e3 0%, transparent 42%),
+        radial-gradient(circle at 92% 8%, #dbe7e1 0%, transparent 40%),
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 52%, #f1f6f3 100%);
       color: var(--text);
+      line-height: 1.45;
     }
-    .wrap { width: min(1180px, 96vw); margin: 24px auto 40px; }
+    .wrap { width: min(1220px, 96vw); margin: 20px auto 40px; }
     .card {
-      background: linear-gradient(180deg, var(--panel) 0%, #0a111c 100%);
+      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.28);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 8px 24px rgba(48, 79, 66, .08);
     }
-    .grid { display: grid; gap: 12px; }
-    .grid.metrics { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
-    .grid.two { grid-template-columns: 1fr 1fr; }
+    .grid { display: grid; gap: 14px; }
+    .grid.metrics { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+    .grid.two { grid-template-columns: 1.08fr .92fr; }
     h1, h2, h3 { margin: 0 0 8px; }
-    h1 { font-size: 20px; }
-    h2 { font-size: 15px; color: #dce9ff; }
+    h1 { font-size: 22px; letter-spacing: .01em; }
+    h2 { font-size: 15px; color: var(--text); }
+    h3 { color: #324741; }
     p { margin: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-2); text-decoration: underline; }
     .muted { color: var(--muted); font-size: 12px; }
     .spacer { height: 12px; }
-    .topbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 12px; }
-    .badge {
+    .topbar {
+      position: sticky;
+      top: 10px;
+      z-index: 4;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 14px;
+      background: rgba(251, 253, 252, .86);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px 14px;
+      box-shadow: 0 6px 18px rgba(49, 76, 67, .07);
+    }
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 7px;
+    }
+    .nav-link {
       display: inline-flex;
       align-items: center;
-      border: 1px solid #3e5b82;
-      background: #12223a;
-      color: #cde0ff;
+      padding: 4px 10px;
+      border: 1px solid #c5d6cf;
       border-radius: 999px;
-      padding: 3px 8px;
-      font-size: 11px;
-      margin-right: 6px;
+      background: #f4f9f6;
+      color: #2f6055;
+      font-size: 12px;
+      text-decoration: none;
     }
-    .metric-number { font-size: 24px; font-weight: 700; color: #f2f7ff; margin-top: 4px; }
+    .nav-link:hover {
+      background: #eaf4ef;
+      color: #234e45;
+      text-decoration: none;
+    }
+    .metric-number { font-size: 24px; font-weight: 700; color: #2b3f39; margin-top: 4px; }
     .ok { color: var(--ok); }
     .danger { color: var(--danger); }
     .notice, .error {
       margin-bottom: 12px;
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 9px 11px;
       border: 1px solid;
       font-size: 13px;
     }
-    .notice { border-color: #2a7f59; background: rgba(42,127,89,.2); color: #c6f3dc; }
-    .error { border-color: #a04b4b; background: rgba(160,75,75,.22); color: #ffd2d2; }
+    .notice { border-color: #b7dbc7; background: var(--notice-soft); color: #26694f; }
+    .error { border-color: #e8c1be; background: var(--danger-soft); color: #8b3b3b; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -155,62 +191,76 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
     }
     th, td {
       text-align: left;
-      border-bottom: 1px solid #22344f;
-      padding: 8px 6px;
+      border-bottom: 1px solid #dce8e2;
+      padding: 9px 7px;
       vertical-align: top;
       word-break: break-word;
     }
-    th { color: #abc3e6; font-weight: 600; }
+    th {
+      color: #45655d;
+      font-weight: 600;
+      background: #f4f8f6;
+      position: sticky;
+      top: 0;
+    }
+    tbody tr:hover td { background: #f8fbf9; }
     form.inline { display: inline; }
     input[type=text], input[type=password], input[type=number] {
       width: 100%;
-      border: 1px solid #385175;
-      background: #0b1627;
-      color: #e6efff;
-      border-radius: 8px;
+      border: 1px solid #bfcec8;
+      background: #f9fcfa;
+      color: #1f302a;
+      border-radius: 10px;
       padding: 8px 9px;
       font-size: 13px;
       outline: none;
     }
-    input:focus { border-color: #70a0df; }
-    label { display: block; margin-bottom: 8px; font-size: 12px; color: #c8daf6; }
+    input:focus {
+      border-color: #77a79a;
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(110, 153, 139, .14);
+    }
+    label { display: block; margin-bottom: 8px; font-size: 12px; color: #3f5851; }
     .fields { display: grid; gap: 10px; }
     .btn {
-      border: 1px solid #496d98;
-      background: #1a365c;
-      color: #f1f6ff;
-      border-radius: 8px;
+      border: 1px solid #63897c;
+      background: #4f7f74;
+      color: #f5fbf8;
+      border-radius: 10px;
       padding: 8px 10px;
       font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
     }
-    .btn:hover { background: #214578; }
+    .btn:hover { background: #3f6f64; }
     .btn-danger {
-      border-color: #935151;
-      background: #522525;
-      color: #ffd7d7;
+      border-color: #b47070;
+      background: #ca8888;
+      color: #fff7f7;
     }
-    .btn-danger:hover { background: #663030; }
+    .btn-danger:hover { background: #b97676; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .login-wrap {
       min-height: 100vh;
       display: grid;
       place-items: center;
-      padding: 18px;
+      padding: 20px;
     }
     .login-card { width: min(460px, 96vw); }
     .pill {
       display: inline-block;
-      border: 1px solid #395476;
+      border: 1px solid #bfd1ca;
       border-radius: 999px;
-      padding: 2px 8px;
+      padding: 3px 9px;
       font-size: 11px;
-      color: #bed3f0;
+      color: #406159;
+      background: var(--accent-soft);
     }
     .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
     @media (max-width: 920px) {
       .grid.two { grid-template-columns: 1fr; }
       table { display: block; overflow-x: auto; white-space: nowrap; }
+      .topbar { position: static; }
     }
   </style>
 </head>
@@ -245,11 +295,11 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
       <div>
         <h1>OrbitTerm 项目管理员控制台</h1>
         <p class="muted">登录账号：{{ .AdminUsername }}（{{ .AdminRole }}）｜ 服务时间(UTC)：{{ .Metrics.CurrentServerUTC }}</p>
-        <p class="muted" style="margin-top:4px;">
-          <a href="/admin/licenses" style="color:#b8d3ff;">激活码管理</a> ｜ 
-          <a href="/admin/backup" style="color:#b8d3ff;">备份与恢复</a> ｜ 
-          <a href="/admin/audit" style="color:#b8d3ff;">审计日志</a>
-        </p>
+        <div class="nav-links">
+          <a class="nav-link" href="/admin/licenses">激活码管理</a>
+          <a class="nav-link" href="/admin/backup">备份与恢复</a>
+          <a class="nav-link" href="/admin/audit">审计日志</a>
+        </div>
       </div>
       <form method="post" action="/admin/logout">
         <button class="btn btn-danger" type="submit">退出登录</button>
