@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::json;
 use tauri::{AppHandle, State};
 use thiserror::Error;
@@ -18,9 +19,8 @@ use crate::e2ee::{
 };
 use crate::models::{
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HostAdvancedOptions,
-    HostAuthConfig, HostConfig, IdentityConfig, SaveVaultRequest, SaveVaultResponse,
-    Snippet, UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse,
-    VaultSyncImportRequest,
+    HostAuthConfig, HostConfig, IdentityConfig, SaveVaultRequest, SaveVaultResponse, Snippet,
+    UnlockAndLoadRequest, UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
 };
 
 const VAULT_FILENAME: &str = "vault.bin";
@@ -51,10 +51,6 @@ enum VaultError {
     UnlockFailed,
     #[error("金库主机列表格式无效")]
     InvalidHosts,
-    #[error("金库身份列表格式无效")]
-    InvalidIdentities,
-    #[error("金库指令列表格式无效")]
-    InvalidSnippets,
     #[error("金库尚未解锁")]
     VaultLocked,
     #[error("未找到可导出的加密金库")]
@@ -73,8 +69,6 @@ impl VaultError {
             Self::Corrupted => "本地金库已损坏，请从备份恢复。".to_string(),
             Self::UnlockFailed => "主密码错误或金库校验失败。".to_string(),
             Self::InvalidHosts => "金库中的主机列表格式无效。".to_string(),
-            Self::InvalidIdentities => "金库中的身份列表格式无效。".to_string(),
-            Self::InvalidSnippets => "金库中的快捷指令格式无效。".to_string(),
             Self::VaultLocked => "请先解锁金库再保存配置。".to_string(),
             Self::BackupSourceMissing => {
                 "未找到可导出的本地加密金库，请先完成一次解锁或保存。".to_string()
@@ -128,9 +122,7 @@ pub async fn export_encrypted_backup(
     result.map_err(|err| err.user_message())
 }
 
-pub async fn export_sync_blob(
-    app: AppHandle,
-) -> Result<VaultSyncExportResponse, String> {
+pub async fn export_sync_blob(app: AppHandle) -> Result<VaultSyncExportResponse, String> {
     let result = export_sync_blob_inner(&app).await;
     result.map_err(|err| err.user_message())
 }
@@ -513,14 +505,13 @@ fn parse_vault_data(
     vault: &CloudVault,
 ) -> Result<(Vec<HostConfig>, Vec<IdentityConfig>, Vec<Snippet>), VaultError> {
     let mut identities = match vault.data.get("identities") {
-        Some(value) => serde_json::from_value::<Vec<IdentityConfig>>(value.clone())
-            .map_err(|_| VaultError::InvalidIdentities)?,
+        Some(value) => parse_vec_lenient::<IdentityConfig>(value),
         None => Vec::new(),
     };
+    normalize_identities(&mut identities);
 
     let snippets = match vault.data.get("snippets") {
-        Some(value) => serde_json::from_value::<Vec<Snippet>>(value.clone())
-            .map_err(|_| VaultError::InvalidSnippets)?,
+        Some(value) => parse_vec_lenient::<Snippet>(value),
         None => Vec::new(),
     };
 
@@ -529,20 +520,19 @@ fn parse_vault_data(
         None => return Ok((Vec::new(), identities, snippets)),
     };
 
-    if let Ok(hosts) = serde_json::from_value::<Vec<HostConfig>>(hosts_value.clone()) {
-        let all_linked = hosts.iter().all(|host| {
-            identities
-                .iter()
-                .any(|identity| identity.id == host.identity_id)
-        });
-        if !all_linked {
-            return Err(VaultError::InvalidIdentities);
-        }
-        return Ok((hosts, identities, snippets));
+    let hosts = parse_vec_lenient::<HostConfig>(&hosts_value);
+    if !hosts.is_empty() {
+        let linked = link_hosts_with_identities(hosts, identities);
+        return Ok((linked.0, linked.1, snippets));
     }
 
-    let legacy_hosts = serde_json::from_value::<Vec<LegacyHostConfig>>(hosts_value)
-        .map_err(|_| VaultError::InvalidHosts)?;
+    let legacy_hosts = parse_vec_lenient::<LegacyHostConfig>(&hosts_value);
+    if legacy_hosts.is_empty() {
+        if matches!(hosts_value, serde_json::Value::Array(_)) {
+            return Ok((Vec::new(), identities, snippets));
+        }
+        return Err(VaultError::InvalidHosts);
+    }
 
     let mut migrated_hosts = Vec::with_capacity(legacy_hosts.len());
     for (index, legacy_host) in legacy_hosts.into_iter().enumerate() {
@@ -575,7 +565,8 @@ fn parse_vault_data(
         });
     }
 
-    Ok((migrated_hosts, identities, snippets))
+    let linked = link_hosts_with_identities(migrated_hosts, identities);
+    Ok((linked.0, linked.1, snippets))
 }
 
 fn next_identity_id(identities: &[IdentityConfig], preferred_id: &str) -> String {
@@ -599,6 +590,84 @@ fn next_identity_id(identities: &[IdentityConfig], preferred_id: &str) -> String
     }
 }
 
+fn parse_vec_lenient<T>(value: &serde_json::Value) -> Vec<T>
+where
+    T: DeserializeOwned,
+{
+    let items = match value {
+        serde_json::Value::Array(items) => items,
+        _ => return Vec::new(),
+    };
+    let mut parsed = Vec::with_capacity(items.len());
+    for item in items {
+        if let Ok(entry) = serde_json::from_value::<T>(item.clone()) {
+            parsed.push(entry);
+        }
+    }
+    parsed
+}
+
+fn normalize_identities(identities: &mut Vec<IdentityConfig>) {
+    let mut occupied = HashSet::new();
+    for identity in identities.iter_mut() {
+        if identity.id.trim().is_empty() {
+            identity.id = format!("identity-{}", occupied.len() + 1);
+        }
+        if identity.name.trim().is_empty() {
+            identity.name = format!("身份-{}", identity.id);
+        }
+        if identity.username.trim().is_empty() {
+            identity.username = "root".to_string();
+        }
+        occupied.insert(identity.id.clone());
+    }
+}
+
+fn link_hosts_with_identities(
+    mut hosts: Vec<HostConfig>,
+    mut identities: Vec<IdentityConfig>,
+) -> (Vec<HostConfig>, Vec<IdentityConfig>) {
+    normalize_identities(&mut identities);
+
+    let mut existing_ids = HashSet::new();
+    for identity in &identities {
+        existing_ids.insert(identity.id.clone());
+    }
+
+    for (index, host) in hosts.iter_mut().enumerate() {
+        if host.basic_info.address.trim().is_empty() {
+            host.basic_info.address = "127.0.0.1".to_string();
+        }
+        if host.basic_info.port == 0 {
+            host.basic_info.port = 22;
+        }
+        if host.basic_info.name.trim().is_empty() {
+            host.basic_info.name = format!("主机-{}", index + 1);
+        }
+
+        let identity_id = if host.identity_id.trim().is_empty() {
+            format!("recovered-identity-{}", index + 1)
+        } else {
+            host.identity_id.trim().to_string()
+        };
+        host.identity_id = identity_id.clone();
+
+        if existing_ids.contains(&identity_id) {
+            continue;
+        }
+
+        identities.push(IdentityConfig {
+            id: identity_id.clone(),
+            name: format!("恢复身份-{}", identity_id),
+            username: "root".to_string(),
+            auth_config: HostAuthConfig::default(),
+        });
+        existing_ids.insert(identity_id);
+    }
+
+    (hosts, identities)
+}
+
 fn map_write_io_error(err: io::Error) -> VaultError {
     let message = match err.kind() {
         io::ErrorKind::PermissionDenied => "保存失败：无写入权限，请检查目录权限。".to_string(),
@@ -612,5 +681,95 @@ fn now_unix_ts() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs() as i64,
         Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{parse_vault_data, CloudVault};
+
+    #[test]
+    fn parse_vault_data_should_recover_missing_identity_links() {
+        let vault = CloudVault {
+            version: 4,
+            updated_at: 1_746_000_000,
+            data: json!({
+                "hosts": [
+                    {
+                        "basicInfo": {
+                            "name": "prod",
+                            "address": "10.0.0.8",
+                            "port": 22,
+                            "description": ""
+                        },
+                        "identityId": "missing-identity",
+                        "advancedOptions": {
+                            "jumpHost": "",
+                            "proxyJumpHostId": "",
+                            "connectionTimeout": 10,
+                            "keepAliveEnabled": true,
+                            "keepAliveInterval": 30,
+                            "compression": true,
+                            "strictHostKeyChecking": true,
+                            "tags": []
+                        }
+                    }
+                ],
+                "identities": [],
+                "snippets": []
+            }),
+        };
+
+        let (hosts, identities, _snippets) = parse_vault_data(&vault).expect("should parse");
+        assert_eq!(hosts.len(), 1);
+        assert!(identities.iter().any(|item| item.id == "missing-identity"));
+    }
+
+    #[test]
+    fn parse_vault_data_should_tolerate_legacy_like_missing_fields() {
+        let vault = CloudVault {
+            version: 1,
+            updated_at: 1_746_000_001,
+            data: json!({
+                "hosts": [
+                    {
+                        "basicInfo": {
+                            "name": "",
+                            "address": "192.168.1.10"
+                        },
+                        "identityId": "",
+                        "advancedOptions": {
+                            "jumpHost": ""
+                        }
+                    }
+                ],
+                "identities": [
+                    {
+                        "id": "",
+                        "name": "",
+                        "username": ""
+                    }
+                ],
+                "snippets": [
+                    {
+                        "id": "s1",
+                        "title": "noop",
+                        "command": "echo 1"
+                    },
+                    {
+                        "title": "broken"
+                    }
+                ]
+            }),
+        };
+
+        let (hosts, identities, snippets) = parse_vault_data(&vault).expect("should parse");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].basic_info.port, 22);
+        assert!(!hosts[0].identity_id.is_empty());
+        assert_eq!(snippets.len(), 1);
+        assert!(!identities.is_empty());
     }
 }

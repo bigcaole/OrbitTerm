@@ -608,10 +608,88 @@ const isLikelyMasterPasswordMismatch = (message: string): boolean => {
   );
 };
 
+const isLikelyLegacyPayloadMismatch = (message: string): boolean => {
+  return (
+    message.includes('金库主机列表格式无效') ||
+    message.includes('金库身份列表格式无效') ||
+    message.includes('金库指令列表格式无效')
+  );
+};
+
+const tryParseJsonText = (raw: string): unknown => {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[') && !trimmed.startsWith('"')) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const unwrapErrorLikeMessage = (error: unknown, depth = 0): string | null => {
+  if (depth > 4 || error == null) {
+    return null;
+  }
+  if (typeof error === 'string') {
+    const text = error.trim();
+    if (!text) {
+      return null;
+    }
+    const parsed = tryParseJsonText(text);
+    if (parsed !== null) {
+      const nested = unwrapErrorLikeMessage(parsed, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+    return text;
+  }
+  if (error instanceof Error) {
+    const direct = error.message?.trim();
+    if (direct) {
+      const parsed = tryParseJsonText(direct);
+      if (parsed !== null) {
+        const nested = unwrapErrorLikeMessage(parsed, depth + 1);
+        if (nested) {
+          return nested;
+        }
+      }
+      return direct;
+    }
+    return unwrapErrorLikeMessage((error as { cause?: unknown }).cause, depth + 1);
+  }
+  if (typeof error === 'object') {
+    const record = error as {
+      message?: unknown;
+      error?: unknown;
+      detail?: unknown;
+      details?: unknown;
+      cause?: unknown;
+    };
+    const candidates = [record.message, record.error, record.detail, record.details, record.cause];
+    for (const candidate of candidates) {
+      const nested = unwrapErrorLikeMessage(candidate, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return null;
+};
+
+const extractErrorMessage = (error: unknown, fallback: string): string => {
+  return unwrapErrorLikeMessage(error) ?? fallback;
+};
+
 const buildCloudPullErrorMessage = (error: unknown, fallback: string): string => {
-  const message = error instanceof Error ? error.message : fallback;
+  const message = extractErrorMessage(error, fallback);
   if (isLikelyMasterPasswordMismatch(message)) {
     return '云端数据解密失败：当前设备主密码与云端不一致。请使用与其他设备一致的主密码解锁后再拉取。';
+  }
+  if (isLikelyLegacyPayloadMismatch(message)) {
+    return '云端数据结构兼容性校验失败，请升级到最新版后重试；若仍失败，请在已有可用设备执行一次“保存并推送”后再拉取。';
   }
   return message || fallback;
 };
@@ -722,7 +800,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       }
     } catch (error) {
       const fallback = '解锁失败，请检查主密码后重试。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isUnlocking: false,
         appView: 'locked',
@@ -803,7 +881,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success('私有云账号注册成功');
     } catch (error) {
       const fallback = '注册同步账号失败，请稍后重试。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSyncingCloud: false,
         cloudSyncError: message || fallback
@@ -834,7 +912,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success('私有云同步已连接');
     } catch (error) {
       const fallback = '同步登录失败，请检查账号或密码。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSyncingCloud: false,
         cloudSyncError: message || fallback
@@ -871,7 +949,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       });
     } catch (error) {
       const fallback = '加载设备列表失败，请稍后重试。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isLoadingCloudDevices: false,
         cloudSyncError: message || fallback
@@ -915,7 +993,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success('设备已退出登录。');
     } catch (error) {
       const fallback = '退出设备失败，请稍后重试。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isLoadingCloudDevices: false,
         cloudSyncError: message || fallback
@@ -945,7 +1023,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success('已退出所有设备。');
     } catch (error) {
       const fallback = '退出所有设备失败，请稍后重试。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isLoadingCloudDevices: false,
         cloudSyncError: message || fallback
@@ -1050,7 +1128,7 @@ export const useHostStore = create<HostState>((set, get) => ({
               return;
             } catch (importError) {
               const fallback = '云端冲突恢复失败，请手动执行拉取。';
-              const message = importError instanceof Error ? importError.message : fallback;
+              const message = extractErrorMessage(importError, fallback);
               set({
                 isSyncingCloud: false,
                 cloudSyncError: message || fallback
@@ -1064,7 +1142,7 @@ export const useHostStore = create<HostState>((set, get) => ({
           }
         }
         const fallback = '自动上传云端失败。';
-        const message = error instanceof Error ? error.message : fallback;
+        const message = extractErrorMessage(error, fallback);
         set({
           isSyncingCloud: false,
           cloudSyncError: message || fallback
@@ -1239,7 +1317,7 @@ export const useHostStore = create<HostState>((set, get) => ({
               return;
             } catch (importError) {
               const fallback = '云端冲突恢复失败，请手动执行拉取。';
-              const message = importError instanceof Error ? importError.message : fallback;
+              const message = extractErrorMessage(importError, fallback);
               set({
                 isSyncingCloud: false,
                 cloudSyncError: message || fallback
@@ -1321,7 +1399,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       return nextIdentity;
     } catch (error) {
       const fallback = '身份已添加到当前会话，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback
@@ -1365,7 +1443,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success(`已添加指令：${snippet.title}`);
     } catch (error) {
       const fallback = '指令已添加到当前会话，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback
@@ -1414,7 +1492,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success(`已更新指令：${nextSnippet.title}`);
     } catch (error) {
       const fallback = '指令已更新到当前会话，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback
@@ -1448,7 +1526,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success(`已删除指令：${target.title}`);
     } catch (error) {
       const fallback = '指令已从当前会话移除，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback
@@ -1543,7 +1621,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       });
     } catch (error) {
       const fallback = '主机编辑已应用到当前会话，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback
@@ -1602,7 +1680,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       toast.success(`已删除主机：${targetHost.basicInfo.name}`);
     } catch (error) {
       const fallback = '主机已从当前界面移除，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback
@@ -1627,7 +1705,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       scheduleCloudPush(get);
     } catch (error) {
       const fallback = '身份更新已应用到当前会话，但写入本地金库失败。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({ isSavingVault: false, saveError: message || fallback });
     }
   },
@@ -1681,7 +1759,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       return true;
     } catch (error) {
       const fallback = '终端连接失败，请检查主机地址与身份认证配置。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isConnectingTerminal: false,
         terminalError: message || fallback
@@ -1880,7 +1958,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       });
     } catch (error) {
       const fallback = '主机已添加到当前会话，但写入本地金库失败，请检查磁盘空间或目录权限。';
-      const message = error instanceof Error ? error.message : fallback;
+      const message = extractErrorMessage(error, fallback);
       set({
         isSavingVault: false,
         saveError: message || fallback

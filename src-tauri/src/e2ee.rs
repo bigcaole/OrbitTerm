@@ -238,7 +238,8 @@ pub fn resolve_lww(local: &CloudVault, incoming: &CloudVault) -> CloudVault {
 }
 
 fn validate_package(encrypted: &EncryptedVault) -> Result<&'static CryptoProfile, E2eeError> {
-    let profile = profile_from_header(encrypted.header.as_bytes()).ok_or(E2eeError::InvalidHeader)?;
+    let profile =
+        profile_from_header(encrypted.header.as_bytes()).ok_or(E2eeError::InvalidHeader)?;
 
     if encrypted.salt.len() != SALT_LEN || encrypted.nonce.len() != NONCE_LEN {
         return Err(E2eeError::InvalidPackage);

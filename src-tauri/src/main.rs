@@ -15,13 +15,13 @@ use models::{
     AiExplainSshErrorRequest, AiExplainSshErrorResponse, AiTranslateRequest, AiTranslateResponse,
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HealthCheckResponse,
     SaveVaultRequest, SaveVaultResponse, SftpDownloadRequest, SftpLsRequest, SftpLsResponse,
-    SftpMkdirRequest, SftpReadTextRequest, SftpReadTextResponse, SftpRenameRequest,
-    SftpRmRequest, SftpTransferResponse, SftpUploadRequest, SshConnectRequest,
-    SshConnectedResponse, SshDerivePublicKeyRequest, SshDerivePublicKeyResponse,
-    SshDeployPublicKeyRequest, SshDisconnectRequest, SshExportPrivateKeyRequest,
-    SshExportPrivateKeyResponse, SshGenerateKeypairRequest, SshGenerateKeypairResponse,
-    SshPulseActivityRequest, SshResizeRequest, SshWriteRequest, UnlockAndLoadRequest,
-    UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
+    SftpMkdirRequest, SftpReadTextRequest, SftpReadTextResponse, SftpRenameRequest, SftpRmRequest,
+    SftpTransferResponse, SftpUploadRequest, SshConnectRequest, SshConnectedResponse,
+    SshDeployPublicKeyRequest, SshDerivePublicKeyRequest, SshDerivePublicKeyResponse,
+    SshDisconnectRequest, SshExportPrivateKeyRequest, SshExportPrivateKeyResponse,
+    SshGenerateKeypairRequest, SshGenerateKeypairResponse, SshPulseActivityRequest,
+    SshResizeRequest, SshWriteRequest, UnlockAndLoadRequest, UnlockAndLoadResponse,
+    VaultSyncExportResponse, VaultSyncImportRequest,
 };
 use ssh::SshSessionRegistry;
 use tauri::{
@@ -255,9 +255,7 @@ async fn vault_import_sync_blob(
 }
 
 #[tauri::command]
-async fn vault_clear_session(
-    state: State<'_, VaultSessionState>,
-) -> Result<(), String> {
+async fn vault_clear_session(state: State<'_, VaultSessionState>) -> Result<(), String> {
     vault::clear_vault_session(state).await
 }
 

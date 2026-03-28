@@ -177,7 +177,12 @@ impl SshSessionRegistry {
         let monitor_handle = handle_ref.clone();
         tokio::spawn(async move {
             monitor_registry
-                .run_sys_status_monitor(monitor_app, monitor_session_id, monitor_handle, pulse_active)
+                .run_sys_status_monitor(
+                    monitor_app,
+                    monitor_session_id,
+                    monitor_handle,
+                    pulse_active,
+                )
                 .await;
         });
 
@@ -321,11 +326,7 @@ impl SshSessionRegistry {
         Ok(())
     }
 
-    pub async fn deploy_public_key(
-        &self,
-        session_id: &str,
-        public_key: String,
-    ) -> SshResult<()> {
+    pub async fn deploy_public_key(&self, session_id: &str, public_key: String) -> SshResult<()> {
         let command = crate::key_manager::build_deploy_command(public_key.as_str())
             .map_err(|err| SshBackendError::RemoteCommand(err.user_message()))?;
         let (status, stdout, stderr) = self.exec_command(session_id, command.as_str(), 15).await?;
@@ -606,7 +607,10 @@ impl SshSessionRegistry {
             return Err(SshBackendError::InvalidInput);
         }
 
-        let max_bytes = request.max_bytes.unwrap_or(2 * 1024 * 1024).clamp(1, 8 * 1024 * 1024);
+        let max_bytes = request
+            .max_bytes
+            .unwrap_or(2 * 1024 * 1024)
+            .clamp(1, 8 * 1024 * 1024);
         let sftp = self.open_sftp_session(&request.session_id).await?;
         let mut remote_file = sftp
             .open(request.remote_path.clone())
@@ -659,11 +663,16 @@ impl SshSessionRegistry {
         }
 
         let sftp = self.open_sftp_session(&request.session_id).await?;
-        let transfer_id = request
-            .transfer_id
-            .clone()
-            .unwrap_or_else(|| format!("upload:{}:{}", request.local_path.clone().unwrap_or_default(), request.remote_path));
-        let (transferred, total_bytes) = if let Some(content_base64) = request.content_base64.clone() {
+        let transfer_id = request.transfer_id.clone().unwrap_or_else(|| {
+            format!(
+                "upload:{}:{}",
+                request.local_path.clone().unwrap_or_default(),
+                request.remote_path
+            )
+        });
+        let (transferred, total_bytes) = if let Some(content_base64) =
+            request.content_base64.clone()
+        {
             let mut remote_file = sftp
                 .open_with_flags(
                     request.remote_path.clone(),
@@ -676,16 +685,12 @@ impl SshSessionRegistry {
                 .map_err(|_| {
                     SshBackendError::SftpOperation("编辑内容编码错误，请重试。".to_string())
                 })?;
-            remote_file
-                .write_all(&decoded)
-                .await
-                .map_err(|err| {
-                    SshBackendError::SftpOperation(format!("写入远端文件失败：{err}"))
-                })?;
-            remote_file
-                .shutdown()
-                .await
-                .map_err(|err| SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}")))?;
+            remote_file.write_all(&decoded).await.map_err(|err| {
+                SshBackendError::SftpOperation(format!("写入远端文件失败：{err}"))
+            })?;
+            remote_file.shutdown().await.map_err(|err| {
+                SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}"))
+            })?;
             let transferred = decoded.len() as u64;
             let total_bytes = transferred;
             let local_path_for_event = request.local_path.clone().unwrap_or_default();
@@ -704,14 +709,19 @@ impl SshSessionRegistry {
             );
             (transferred, total_bytes)
         } else {
-            let local_path = request.local_path.clone().ok_or(SshBackendError::InvalidInput)?;
+            let local_path = request
+                .local_path
+                .clone()
+                .ok_or(SshBackendError::InvalidInput)?;
             if local_path.trim().is_empty() {
                 return Err(SshBackendError::InvalidInput);
             }
 
             let mut local_file = tokio_fs::File::open(local_path.clone())
                 .await
-                .map_err(|err| SshBackendError::SftpOperation(format!("读取本地文件失败：{err}")))?;
+                .map_err(|err| {
+                    SshBackendError::SftpOperation(format!("读取本地文件失败：{err}"))
+                })?;
             let metadata = local_file.metadata().await.map_err(|err| {
                 SshBackendError::SftpOperation(format!("读取本地文件信息失败：{err}"))
             })?;
@@ -855,10 +865,9 @@ impl SshSessionRegistry {
                     },
                 );
             }
-            remote_file
-                .shutdown()
-                .await
-                .map_err(|err| SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}")))?;
+            remote_file.shutdown().await.map_err(|err| {
+                SshBackendError::SftpOperation(format!("关闭远端文件失败：{err}"))
+            })?;
             (transferred, total_size)
         };
 
@@ -1153,16 +1162,15 @@ fn parse_proc_snapshot(raw: &str) -> SshResult<ProcSnapshot> {
         net_tx_total = fallback_tx_total;
     }
 
-    let cpu = parse_cpu_line(cpu_line.ok_or_else(|| {
-        SshBackendError::SftpOperation("无法解析 /proc/stat".to_string())
-    })?)?;
+    let cpu = parse_cpu_line(
+        cpu_line
+            .ok_or_else(|| SshBackendError::SftpOperation("无法解析 /proc/stat".to_string()))?,
+    )?;
 
-    let total_kb = mem_total_kb.ok_or_else(|| {
-        SshBackendError::SftpOperation("无法解析 /proc/meminfo".to_string())
-    })?;
-    let available_kb = mem_available_kb.ok_or_else(|| {
-        SshBackendError::SftpOperation("无法解析 /proc/meminfo".to_string())
-    })?;
+    let total_kb = mem_total_kb
+        .ok_or_else(|| SshBackendError::SftpOperation("无法解析 /proc/meminfo".to_string()))?;
+    let available_kb = mem_available_kb
+        .ok_or_else(|| SshBackendError::SftpOperation("无法解析 /proc/meminfo".to_string()))?;
     if total_kb == 0 {
         return Err(SshBackendError::SftpOperation(
             "远端内存信息无效".to_string(),

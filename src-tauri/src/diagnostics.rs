@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tauri::AppHandle;
 #[cfg(windows)]
 use tauri::webview_version;
+use tauri::AppHandle;
 use tokio::fs;
 use tokio::net::lookup_host;
 

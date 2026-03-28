@@ -7,6 +7,12 @@ pub enum AuthMethod {
     PrivateKey,
 }
 
+impl Default for AuthMethod {
+    fn default() -> Self {
+        Self::Password
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshConnectRequest {
@@ -202,37 +208,90 @@ pub struct SshDiagnosticLogEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostBasicInfo {
+    #[serde(default = "default_host_name")]
     pub name: String,
+    #[serde(default = "default_host_address")]
     pub address: String,
+    #[serde(default = "default_host_port")]
     pub port: u16,
+    #[serde(default)]
     pub description: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostAuthConfig {
+    #[serde(default)]
     pub method: AuthMethod,
+    #[serde(default)]
     pub password: Option<String>,
+    #[serde(default)]
     pub private_key: Option<String>,
+    #[serde(default)]
     pub passphrase: Option<String>,
+}
+
+impl Default for HostAuthConfig {
+    fn default() -> Self {
+        Self {
+            method: AuthMethod::Password,
+            password: Some(String::new()),
+            private_key: Some(String::new()),
+            passphrase: Some(String::new()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostAdvancedOptions {
+    #[serde(default)]
     pub jump_host: String,
     #[serde(default)]
     pub proxy_jump_host_id: String,
+    #[serde(default = "default_connection_timeout")]
     pub connection_timeout: u64,
     #[serde(default = "default_keep_alive_enabled")]
     pub keep_alive_enabled: bool,
+    #[serde(default = "default_keep_alive_interval")]
     pub keep_alive_interval: u64,
+    #[serde(default = "default_compression")]
     pub compression: bool,
+    #[serde(default = "default_strict_host_key_checking")]
     pub strict_host_key_checking: bool,
+    #[serde(default)]
     pub tags: Vec<String>,
 }
 
+fn default_host_name() -> String {
+    "未命名主机".to_string()
+}
+
+fn default_host_address() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_host_port() -> u16 {
+    22
+}
+
+fn default_connection_timeout() -> u64 {
+    10
+}
+
 fn default_keep_alive_enabled() -> bool {
+    true
+}
+
+fn default_keep_alive_interval() -> u64 {
+    30
+}
+
+fn default_compression() -> bool {
+    true
+}
+
+fn default_strict_host_key_checking() -> bool {
     true
 }
 
@@ -240,6 +299,7 @@ fn default_keep_alive_enabled() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct HostConfig {
     pub basic_info: HostBasicInfo,
+    #[serde(default)]
     pub identity_id: String,
     pub advanced_options: HostAdvancedOptions,
 }
@@ -247,9 +307,13 @@ pub struct HostConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityConfig {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub auth_config: HostAuthConfig,
 }
 

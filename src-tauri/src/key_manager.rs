@@ -65,7 +65,10 @@ pub fn generate_ssh_keypair(
         .public_key()
         .to_openssh()
         .map_err(|_| KeyManagerError::GenerateFailed)?;
-    let fingerprint = private_key.public_key().fingerprint(HashAlg::Sha256).to_string();
+    let fingerprint = private_key
+        .public_key()
+        .fingerprint(HashAlg::Sha256)
+        .to_string();
 
     Ok(SshGenerateKeypairResponse {
         algorithm: request.algorithm,
@@ -83,7 +86,10 @@ pub fn derive_public_key(
         .public_key()
         .to_openssh()
         .map_err(|_| KeyManagerError::InvalidPrivateKey)?;
-    let fingerprint = private_key.public_key().fingerprint(HashAlg::Sha256).to_string();
+    let fingerprint = private_key
+        .public_key()
+        .fingerprint(HashAlg::Sha256)
+        .to_string();
 
     Ok(SshDerivePublicKeyResponse {
         public_key,
@@ -94,9 +100,7 @@ pub fn derive_public_key(
 pub fn normalize_public_key(public_key: &str) -> Result<String, KeyManagerError> {
     let trimmed = public_key.trim();
     if trimmed.is_empty() {
-        return Err(KeyManagerError::InvalidInput(
-            "公钥不能为空。".to_string(),
-        ));
+        return Err(KeyManagerError::InvalidInput("公钥不能为空。".to_string()));
     }
 
     let parsed = PublicKey::from_openssh(trimmed).map_err(|_| KeyManagerError::InvalidPublicKey)?;
@@ -142,9 +146,7 @@ pub async fn export_private_key(
 fn parse_private_key(raw: &str) -> Result<PrivateKey, KeyManagerError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(KeyManagerError::InvalidInput(
-            "私钥不能为空。".to_string(),
-        ));
+        return Err(KeyManagerError::InvalidInput("私钥不能为空。".to_string()));
     }
     PrivateKey::from_openssh(trimmed).map_err(|_| KeyManagerError::InvalidPrivateKey)
 }
@@ -179,7 +181,9 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), KeyManagerError> 
             .map_err(map_export_io_error)?;
     }
 
-    fs::rename(&tmp_path, path).await.map_err(map_export_io_error)?;
+    fs::rename(&tmp_path, path)
+        .await
+        .map_err(map_export_io_error)?;
     Ok(())
 }
 
