@@ -32,11 +32,11 @@ interface SettingsDrawerProps {
 
 export type SettingsCategory = 'profile' | 'settings' | 'files' | 'other';
 
-const SETTINGS_CATEGORY_OPTIONS: ReadonlyArray<{ id: SettingsCategory; label: string }> = [
-  { id: 'profile', label: '个人信息' },
-  { id: 'settings', label: '设置' },
-  { id: 'files', label: '文件' },
-  { id: 'other', label: '其他' }
+const SETTINGS_CATEGORY_OPTIONS: ReadonlyArray<{ id: SettingsCategory }> = [
+  { id: 'profile' },
+  { id: 'settings' },
+  { id: 'files' },
+  { id: 'other' }
 ];
 
 const FONT_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
@@ -204,10 +204,10 @@ export function SettingsDrawer({
 
   const accountDisplay = useMemo(() => {
     if (!cloudSyncSession?.email) {
-      return '本地离线模式';
+      return t('settings.offlineMode');
     }
     return cloudSyncSession.email;
-  }, [cloudSyncSession]);
+  }, [cloudSyncSession, t]);
 
   const accountAvatar = useMemo(() => {
     const source = cloudSyncSession?.email?.trim();
@@ -427,13 +427,13 @@ export function SettingsDrawer({
       />
       <aside className="h-full w-full max-w-md overflow-y-auto border-l border-white/30 bg-[#f2f7ff]/90 p-5 shadow-2xl backdrop-blur-2xl">
         <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-5 flex items-center justify-between border-b border-white/60 bg-[#f2f7ff]/95 px-5 py-4 backdrop-blur-2xl">
-          <h2 className="text-base font-semibold text-slate-900">设置中心</h2>
+          <h2 className="text-base font-semibold text-slate-900">{t('settings.centerTitle')}</h2>
           <button
             className="rounded-md px-2 py-1 text-xs text-slate-600 hover:bg-white/70"
             onClick={onClose}
             type="button"
           >
-            关闭
+            {t('common.close')}
           </button>
         </div>
 
@@ -446,7 +446,7 @@ export function SettingsDrawer({
               <div>
                 <p className="text-sm font-semibold text-slate-900">{accountDisplay}</p>
                 <p className="text-[11px] text-slate-600">
-                  {cloudSyncSession ? '云同步账号已登录' : '尚未登录云同步账号'}
+                  {cloudSyncSession ? t('settings.cloudLoggedIn') : t('settings.cloudNotLoggedIn')}
                 </p>
               </div>
             </div>
@@ -463,7 +463,7 @@ export function SettingsDrawer({
                   onClick={() => onCategoryChange(item.id)}
                   type="button"
                 >
-                  {item.label}
+                  {t(`settings.category.${item.id}`)}
                 </button>
               ))}
             </div>

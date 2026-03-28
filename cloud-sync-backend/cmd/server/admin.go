@@ -24,7 +24,8 @@ const (
 
 type adminSessionClaims struct {
 	jwt.RegisteredClaims
-	IsAdmin bool `json:"isAdmin"`
+	IsAdmin bool   `json:"isAdmin"`
+	Role    string `json:"role"`
 }
 
 type adminDashboardMetrics struct {
@@ -63,7 +64,9 @@ type adminPageData struct {
 	Notice                   string
 	Error                    string
 	AdminUsername            string
+	AdminRole                string
 	Admin2FAEnabled          bool
+	Admin2FACodeMasked       string
 	Runtime                  runtimeSettings
 	Metrics                  adminDashboardMetrics
 	Users                    []adminUserRow
@@ -241,10 +244,11 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
     <div class="topbar">
       <div>
         <h1>OrbitTerm 项目管理员控制台</h1>
-        <p class="muted">登录账号：{{ .AdminUsername }} ｜ 服务时间(UTC)：{{ .Metrics.CurrentServerUTC }}</p>
+        <p class="muted">登录账号：{{ .AdminUsername }}（{{ .AdminRole }}）｜ 服务时间(UTC)：{{ .Metrics.CurrentServerUTC }}</p>
         <p class="muted" style="margin-top:4px;">
           <a href="/admin/licenses" style="color:#b8d3ff;">激活码管理</a> ｜ 
-          <a href="/admin/backup" style="color:#b8d3ff;">备份与恢复</a>
+          <a href="/admin/backup" style="color:#b8d3ff;">备份与恢复</a> ｜ 
+          <a href="/admin/audit" style="color:#b8d3ff;">审计日志</a>
         </p>
       </div>
       <form method="post" action="/admin/logout">
@@ -307,8 +311,21 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
         <div class="spacer"></div>
         <p><span class="pill">管理员账号</span> {{ .AdminUsername }}</p>
         <p class="spacer"></p>
+        <p><span class="pill">管理员角色</span> {{ .AdminRole }}</p>
+        <p class="spacer"></p>
         <p><span class="pill">2FA</span> {{ if .Admin2FAEnabled }}已开启{{ else }}未开启{{ end }}</p>
-        <p class="muted">2FA 开关由环境变量 ADMIN_2FA_ENABLED 控制，验证码由 ADMIN_2FA_CODE 提供。</p>
+        <p class="muted">当前验证码：{{ if .Admin2FAEnabled }}{{ .Admin2FACodeMasked }}{{ else }}未启用{{ end }}</p>
+        <div class="spacer"></div>
+        <form method="post" action="/admin/security" class="fields">
+          <label class="row">
+            <span>启用管理员 2FA</span>
+            <input type="checkbox" name="admin_2fa_enabled" value="true" {{ if .Admin2FAEnabled }}checked{{ end }} />
+          </label>
+          <label>2FA 验证码（6-16位，留空则沿用当前）
+            <input type="text" name="admin_2fa_code" maxlength="16" />
+          </label>
+          <button class="btn" type="submit">保存 2FA 安全策略</button>
+        </form>
         <div class="spacer"></div>
         <p><span class="pill">会话策略</span> Cookie + JWT（HttpOnly / SameSite=Lax）</p>
         <p class="muted">会话时长由 ADMIN_SESSION_HOURS 决定。</p>
@@ -414,15 +431,29 @@ func (a *app) registerAdminRoutes(router *gin.Engine) {
 	adminGroup := router.Group("/admin")
 	adminGroup.Use(a.adminAuthMiddleware())
 	adminGroup.POST("/logout", a.handleAdminLogout)
-	adminGroup.POST("/settings", a.handleAdminUpdateSettings)
-	adminGroup.POST("/device/revoke", a.handleAdminRevokeDevice)
-	adminGroup.POST("/user/revoke-all", a.handleAdminRevokeAllUserDevices)
+	adminGroup.GET("/audit", a.handleAdminAuditPage)
+	adminGroup.POST("/settings", a.requireAdminRole("superadmin", "admin"), a.handleAdminUpdateSettings)
+	adminGroup.POST("/security", a.requireAdminRole("superadmin"), a.handleAdminUpdateSecurity)
+	adminGroup.POST("/device/revoke", a.requireAdminRole("superadmin", "admin"), a.handleAdminRevokeDevice)
+	adminGroup.POST(
+		"/user/revoke-all",
+		a.requireAdminRole("superadmin", "admin"),
+		a.handleAdminRevokeAllUserDevices,
+	)
 	adminGroup.GET("/licenses", a.handleAdminLicensePage)
-	adminGroup.POST("/licenses/generate", a.handleAdminGenerateLicenseCodes)
-	adminGroup.POST("/licenses/disable", a.handleAdminDisableLicenseCode)
+	adminGroup.POST(
+		"/licenses/generate",
+		a.requireAdminRole("superadmin", "admin"),
+		a.handleAdminGenerateLicenseCodes,
+	)
+	adminGroup.POST(
+		"/licenses/disable",
+		a.requireAdminRole("superadmin", "admin"),
+		a.handleAdminDisableLicenseCode,
+	)
 	adminGroup.GET("/backup", a.handleAdminBackupPage)
-	adminGroup.GET("/backup/export", a.handleAdminBackupExport)
-	adminGroup.POST("/backup/import", a.handleAdminBackupImport)
+	adminGroup.GET("/backup/export", a.requireAdminRole("superadmin", "admin"), a.handleAdminBackupExport)
+	adminGroup.POST("/backup/import", a.requireAdminRole("superadmin"), a.handleAdminBackupImport)
 }
 
 func (a *app) buildAdminSessionToken() (string, error) {
@@ -435,6 +466,7 @@ func (a *app) buildAdminSessionToken() (string, error) {
 			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
 		},
 		IsAdmin: true,
+		Role:    normalizeAdminRole(a.cfg.AdminRole),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -459,6 +491,7 @@ func (a *app) parseAdminSessionToken(tokenString string) (*adminSessionClaims, e
 	if strings.TrimSpace(claims.Issuer) != adminSessionIssuer || strings.TrimSpace(claims.Subject) != a.cfg.AdminUsername {
 		return nil, errors.New("管理员会话无效")
 	}
+	claims.Role = normalizeAdminRole(claims.Role)
 	return claims, nil
 }
 
@@ -496,7 +529,25 @@ func (a *app) adminAuthMiddleware() gin.HandlerFunc {
 		}
 
 		c.Set("adminUsername", claims.Subject)
+		c.Set("adminRole", normalizeAdminRole(claims.Role))
 		c.Next()
+	}
+}
+
+func (a *app) requireAdminRole(allowedRoles ...string) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(allowedRoles))
+	for _, role := range allowedRoles {
+		allowed[normalizeAdminRole(role)] = struct{}{}
+	}
+	return func(c *gin.Context) {
+		role := normalizeAdminRole(c.GetString("adminRole"))
+		if _, ok := allowed[role]; ok {
+			c.Next()
+			return
+		}
+		a.writeAdminAuditFromRequest(c, "admin.permission.denied", c.FullPath(), "forbidden", "insufficient role")
+		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("当前账号角色权限不足，无法执行该操作。"))
+		c.Abort()
 	}
 }
 
@@ -518,7 +569,8 @@ func (a *app) handleAdminPage(c *gin.Context) {
 		return
 	}
 
-	if _, parseErr := a.parseAdminSessionToken(strings.TrimSpace(cookieToken)); parseErr != nil {
+	claims, parseErr := a.parseAdminSessionToken(strings.TrimSpace(cookieToken))
+	if parseErr != nil {
 		a.clearAdminSessionCookie(c)
 		a.renderAdminPage(c, adminPageData{
 			Authenticated:   false,
@@ -532,11 +584,13 @@ func (a *app) handleAdminPage(c *gin.Context) {
 	metrics, metricsErr := a.loadAdminMetrics(c.Request.Context())
 	if metricsErr != nil {
 		a.renderAdminPage(c, adminPageData{
-			Authenticated:   true,
-			AdminUsername:   a.cfg.AdminUsername,
-			Admin2FAEnabled: a.cfg.Admin2FAEnabled,
-			Notice:          notice,
-			Error:           "读取统计信息失败，请稍后刷新。",
+			Authenticated:      true,
+			AdminUsername:      a.cfg.AdminUsername,
+			AdminRole:          normalizeAdminRole(claims.Role),
+			Admin2FAEnabled:    a.cfg.Admin2FAEnabled,
+			Admin2FACodeMasked: strings.Repeat("*", 6),
+			Notice:             notice,
+			Error:              "读取统计信息失败，请稍后刷新。",
 		})
 		return
 	}
@@ -560,12 +614,26 @@ func (a *app) handleAdminPage(c *gin.Context) {
 	clientDefaultSyncDomain := strings.TrimSpace(adminSettings[settingClientDefaultSyncDomain])
 	clientSyncDomainLocked := parseBoolString(adminSettings[settingClientSyncDomainLocked], false)
 	clientHideSyncDomainEdit := parseBoolString(adminSettings[settingClientHideSyncDomainEdit], false)
+	admin2FACodeMasked := "未设置"
+	if a.cfg.Admin2FAEnabled {
+		codeLen := len(strings.TrimSpace(a.cfg.Admin2FACode))
+		if codeLen <= 0 {
+			admin2FACodeMasked = "未设置"
+		} else {
+			if codeLen > 8 {
+				codeLen = 8
+			}
+			admin2FACodeMasked = strings.Repeat("*", codeLen)
+		}
+	}
 	a.renderAdminPage(c, adminPageData{
 		Authenticated:            true,
 		Notice:                   notice,
 		Error:                    strings.TrimSpace(errorMessage),
 		AdminUsername:            a.cfg.AdminUsername,
+		AdminRole:                normalizeAdminRole(claims.Role),
 		Admin2FAEnabled:          a.cfg.Admin2FAEnabled,
+		Admin2FACodeMasked:       admin2FACodeMasked,
 		Runtime:                  currentRuntime,
 		Metrics:                  metrics,
 		Users:                    users,
@@ -605,15 +673,18 @@ func (a *app) handleAdminLogin(c *gin.Context) {
 	otp := strings.TrimSpace(c.PostForm("otp"))
 
 	if username != a.cfg.AdminUsername {
+		a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "invalid username")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("管理员账号或密码错误。"))
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(a.cfg.AdminPasswordHash), []byte(password)) != nil {
+		a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "invalid password")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("管理员账号或密码错误。"))
 		return
 	}
 	if a.cfg.Admin2FAEnabled {
 		if otp == "" || otp != a.cfg.Admin2FACode {
+			a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "invalid 2fa")
 			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("2FA 验证失败，请检查验证码。"))
 			return
 		}
@@ -621,14 +692,19 @@ func (a *app) handleAdminLogin(c *gin.Context) {
 
 	token, err := a.buildAdminSessionToken()
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "session token build failed")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("创建管理员会话失败，请重试。"))
 		return
 	}
 	a.setAdminSessionCookie(c, token)
+	c.Set("adminUsername", a.cfg.AdminUsername)
+	c.Set("adminRole", normalizeAdminRole(a.cfg.AdminRole))
+	a.writeAdminAuditFromRequest(c, "admin.login", "console", "ok", "login success")
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("管理员登录成功。"))
 }
 
 func (a *app) handleAdminLogout(c *gin.Context) {
+	a.writeAdminAuditFromRequest(c, "admin.logout", "console", "ok", "logout success")
 	a.clearAdminSessionCookie(c)
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("已退出管理员登录。"))
 }
@@ -645,6 +721,7 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 	maxBodyRaw := strings.TrimSpace(c.PostForm("max_request_body_bytes"))
 	nextMaxBody, maxBodyErr := strconv.ParseInt(maxBodyRaw, 10, 64)
 	if maxBodyErr != nil || nextMaxBody < 1024 || nextMaxBody > 64*1024*1024 {
+		a.writeAdminAuditFromRequest(c, "admin.settings.update", "runtime", "failed", "invalid MAX_REQUEST_BODY_BYTES")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("MAX_REQUEST_BODY_BYTES 必须在 1024 到 67108864 之间。"))
 		return
 	}
@@ -652,6 +729,7 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 	authLimitRaw := strings.TrimSpace(c.PostForm("auth_rate_limit_per_min"))
 	nextAuthLimit, authErr := strconv.Atoi(authLimitRaw)
 	if authErr != nil || nextAuthLimit <= 0 || nextAuthLimit > 3000 {
+		a.writeAdminAuditFromRequest(c, "admin.settings.update", "runtime", "failed", "invalid AUTH_RATE_LIMIT_PER_MIN")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("AUTH_RATE_LIMIT_PER_MIN 必须在 1 到 3000 之间。"))
 		return
 	}
@@ -659,6 +737,7 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 	syncLimitRaw := strings.TrimSpace(c.PostForm("sync_rate_limit_per_min"))
 	nextSyncLimit, syncErr := strconv.Atoi(syncLimitRaw)
 	if syncErr != nil || nextSyncLimit <= 0 || nextSyncLimit > 5000 {
+		a.writeAdminAuditFromRequest(c, "admin.settings.update", "runtime", "failed", "invalid SYNC_RATE_LIMIT_PER_MIN")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("SYNC_RATE_LIMIT_PER_MIN 必须在 1 到 5000 之间。"))
 		return
 	}
@@ -677,6 +756,7 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 
 	tx, err := a.db.BeginTx(c.Request.Context(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.settings.update", "runtime", "failed", "begin tx failed")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("保存设置失败，请稍后重试。"))
 		return
 	}
@@ -708,17 +788,26 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 			item.key,
 			item.value,
 		); execErr != nil {
+			a.writeAdminAuditFromRequest(c, "admin.settings.update", "runtime", "failed", "upsert failed")
 			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("保存设置失败，请稍后重试。"))
 			return
 		}
 	}
 
 	if commitErr := tx.Commit(); commitErr != nil {
+		a.writeAdminAuditFromRequest(c, "admin.settings.update", "runtime", "failed", "commit failed")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("保存设置失败，请稍后重试。"))
 		return
 	}
 
 	a.applyRuntimeSettings(next)
+	a.writeAdminAuditFromRequest(
+		c,
+		"admin.settings.update",
+		"runtime",
+		"ok",
+		"runtime settings updated",
+	)
 	if current.AllowInsecureHTTP != next.AllowInsecureHTTP {
 		c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("参数已更新。ALLOW_INSECURE_HTTP 已生效，建议确认反向代理策略。"))
 		return
@@ -726,9 +815,50 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("参数已更新并生效。"))
 }
 
+func (a *app) handleAdminUpdateSecurity(c *gin.Context) {
+	next2FAEnabled := strings.TrimSpace(c.PostForm("admin_2fa_enabled")) == "true"
+	next2FACode := strings.TrimSpace(c.PostForm("admin_2fa_code"))
+	if next2FAEnabled {
+		if next2FACode == "" {
+			next2FACode = strings.TrimSpace(a.cfg.Admin2FACode)
+		}
+		if len(next2FACode) < 6 || len(next2FACode) > 16 {
+			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa", "failed", "invalid 2fa code length")
+			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("2FA 验证码长度必须在 6~16 位之间。"))
+			return
+		}
+	}
+
+	settings := map[string]string{
+		settingAdmin2FAEnabled: strconv.FormatBool(next2FAEnabled),
+	}
+	if next2FAEnabled {
+		settings[settingAdmin2FACode] = next2FACode
+	}
+	if !next2FAEnabled {
+		settings[settingAdmin2FACode] = ""
+	}
+	if err := a.upsertAdminSettings(c.Request.Context(), settings); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa", "failed", "upsert failed")
+		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("保存 2FA 策略失败，请稍后重试。"))
+		return
+	}
+
+	a.cfg.Admin2FAEnabled = next2FAEnabled
+	if next2FAEnabled {
+		a.cfg.Admin2FACode = next2FACode
+	} else {
+		a.cfg.Admin2FACode = ""
+	}
+
+	a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa", "ok", "2fa settings updated")
+	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("管理员 2FA 策略已更新。"))
+}
+
 func (a *app) handleAdminRevokeDevice(c *gin.Context) {
 	deviceID := strings.TrimSpace(c.PostForm("device_id"))
 	if deviceID == "" {
+		a.writeAdminAuditFromRequest(c, "admin.device.revoke", "-", "failed", "missing device_id")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("缺少 device_id。"))
 		return
 	}
@@ -743,21 +873,25 @@ func (a *app) handleAdminRevokeDevice(c *gin.Context) {
 		deviceID,
 	)
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.device.revoke", deviceID, "failed", "db update failed")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("撤销设备失败，请稍后重试。"))
 		return
 	}
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
+		a.writeAdminAuditFromRequest(c, "admin.device.revoke", deviceID, "failed", "not found or already revoked")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("未找到可撤销设备，可能已失效。"))
 		return
 	}
+	a.writeAdminAuditFromRequest(c, "admin.device.revoke", deviceID, "ok", "device revoked")
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("设备会话已撤销。"))
 }
 
 func (a *app) handleAdminRevokeAllUserDevices(c *gin.Context) {
 	userID := strings.TrimSpace(c.PostForm("user_id"))
 	if userID == "" {
+		a.writeAdminAuditFromRequest(c, "admin.user.revoke_all_devices", "-", "failed", "missing user_id")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("缺少 user_id。"))
 		return
 	}
@@ -772,15 +906,24 @@ func (a *app) handleAdminRevokeAllUserDevices(c *gin.Context) {
 		userID,
 	)
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.user.revoke_all_devices", userID, "failed", "db update failed")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("批量退出设备失败，请稍后重试。"))
 		return
 	}
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
+		a.writeAdminAuditFromRequest(c, "admin.user.revoke_all_devices", userID, "failed", "no active devices")
 		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("该用户没有可撤销的在线设备。"))
 		return
 	}
+	a.writeAdminAuditFromRequest(
+		c,
+		"admin.user.revoke_all_devices",
+		userID,
+		"ok",
+		"all active devices revoked",
+	)
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("该用户所有设备会话已撤销。"))
 }
 

@@ -36,6 +36,7 @@ type config struct {
 	AdminWebEnabled     bool
 	AdminUsername       string
 	AdminPasswordHash   string
+	AdminRole           string
 	Admin2FAEnabled     bool
 	Admin2FACode        string
 	AdminSessionHours   int
@@ -310,6 +311,18 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			expires_at TIMESTAMPTZ,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
+			id BIGSERIAL PRIMARY KEY,
+			actor_username TEXT NOT NULL,
+			actor_role TEXT NOT NULL DEFAULT 'superadmin',
+			action TEXT NOT NULL,
+			target TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT 'ok',
+			detail TEXT NOT NULL DEFAULT '',
+			ip TEXT NOT NULL DEFAULT '',
+			user_agent TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_updated_at ON vault_blobs(updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_version ON vault_blobs(version)`,
 		`CREATE INDEX IF NOT EXISTS idx_snippets_user_updated_at ON snippets(user_id, updated_at DESC)`,
@@ -320,6 +333,9 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_sync_license_codes_created_at ON sync_license_codes(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sync_license_codes_used_by_user ON sync_license_codes(used_by_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_sync_entitlements_expires_at ON user_sync_entitlements(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(action)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_actor ON admin_audit_logs(actor_username)`,
 	}
 
 	for _, stmt := range statements {
@@ -342,6 +358,7 @@ func loadConfig() (config, error) {
 		AdminWebEnabled:     readEnvBool("ADMIN_WEB_ENABLED", true),
 		AdminUsername:       strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
 		AdminPasswordHash:   strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
+		AdminRole:           normalizeAdminRole(readEnv("ADMIN_ROLE", "superadmin")),
 		Admin2FAEnabled:     readEnvBool("ADMIN_2FA_ENABLED", false),
 		Admin2FACode:        strings.TrimSpace(os.Getenv("ADMIN_2FA_CODE")),
 		AdminSessionHours:   readEnvInt("ADMIN_SESSION_HOURS", 12),
@@ -388,6 +405,19 @@ func loadConfig() (config, error) {
 	}
 
 	return cfg, nil
+}
+
+func normalizeAdminRole(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "superadmin":
+		return "superadmin"
+	case "admin":
+		return "admin"
+	case "viewer":
+		return "viewer"
+	default:
+		return "superadmin"
+	}
 }
 
 func readEnv(key, fallback string) string {

@@ -176,16 +176,19 @@ func (a *app) handleAdminBackupPage(c *gin.Context) {
 func (a *app) handleAdminBackupExport(c *gin.Context) {
 	payload, err := a.buildAdminBackupPayload(c.Request.Context())
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.export", "all", "failed", "build payload failed")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("备份导出失败，请稍后重试。"))
 		return
 	}
 	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.export", "all", "failed", "marshal payload failed")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("备份导出失败，请稍后重试。"))
 		return
 	}
 
 	filename := "orbitterm-admin-backup-" + time.Now().UTC().Format("20060102-150405") + ".json"
+	a.writeAdminAuditFromRequest(c, "admin.backup.export", "all", "ok", "backup json exported")
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Data(http.StatusOK, "application/json; charset=utf-8", encoded)
@@ -194,33 +197,40 @@ func (a *app) handleAdminBackupExport(c *gin.Context) {
 func (a *app) handleAdminBackupImport(c *gin.Context) {
 	raw := strings.TrimSpace(c.PostForm("backup_json"))
 	if raw == "" {
+		a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "failed", "empty payload")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("请粘贴备份 JSON 内容。"))
 		return
 	}
 
 	var payload adminBackupPayload
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "failed", "invalid json")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("备份 JSON 格式无效。"))
 		return
 	}
 	if payload.SchemaVersion <= 0 {
+		a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "failed", "invalid schema version")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("备份版本无效。"))
 		return
 	}
 
 	if err := a.importAdminBackupPayload(c.Request.Context(), payload); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "failed", "import transaction failed")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("备份导入失败："+err.Error()))
 		return
 	}
 	if err := a.loadRuntimeSettings(c.Request.Context()); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "failed", "reload runtime settings failed")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("导入成功，但运行参数刷新失败："+err.Error()))
 		return
 	}
 	if err := a.loadBootstrapConfig(c.Request.Context()); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "failed", "reload bootstrap failed")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("导入成功，但引导配置刷新失败："+err.Error()))
 		return
 	}
 
+	a.writeAdminAuditFromRequest(c, "admin.backup.import", "all", "ok", "backup imported and reloaded")
 	a.clearAdminSessionCookie(c)
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("备份导入成功，请重新登录管理员账号。"))
 }

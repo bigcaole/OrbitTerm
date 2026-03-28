@@ -15,6 +15,7 @@ const (
 	settingAdminWebEnabled          = "admin_web_enabled"
 	settingAdminUsername            = "admin_username"
 	settingAdminPasswordHash        = "admin_password_hash"
+	settingAdminRole                = "admin_role"
 	settingAdmin2FAEnabled          = "admin_2fa_enabled"
 	settingAdmin2FACode             = "admin_2fa_code"
 	settingAdminSessionHours        = "admin_session_hours"
@@ -136,6 +137,11 @@ func (a *app) loadBootstrapConfig(ctx context.Context) error {
 	if strings.TrimSpace(a.cfg.AdminPasswordHash) == "" {
 		a.cfg.AdminPasswordHash = strings.TrimSpace(settings[settingAdminPasswordHash])
 	}
+	if rawRole, ok := settings[settingAdminRole]; ok && strings.TrimSpace(rawRole) != "" {
+		a.cfg.AdminRole = normalizeAdminRole(rawRole)
+	} else {
+		a.cfg.AdminRole = normalizeAdminRole(a.cfg.AdminRole)
+	}
 	if raw, ok := settings[settingAdmin2FAEnabled]; ok && strings.TrimSpace(raw) != "" {
 		a.cfg.Admin2FAEnabled = parseBoolString(raw, a.cfg.Admin2FAEnabled)
 	}
@@ -154,6 +160,7 @@ func (a *app) loadBootstrapConfig(ctx context.Context) error {
 	bootstrapSettings := map[string]string{
 		settingJWTSecret:         a.cfg.JWTSecret,
 		settingAdminWebEnabled:   strconv.FormatBool(a.cfg.AdminWebEnabled),
+		settingAdminRole:         normalizeAdminRole(a.cfg.AdminRole),
 		settingAdmin2FAEnabled:   strconv.FormatBool(a.cfg.Admin2FAEnabled),
 		settingAdminSessionHours: strconv.Itoa(a.cfg.AdminSessionHours),
 	}

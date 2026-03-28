@@ -278,6 +278,7 @@ func (a *app) handleSetupSubmit(c *gin.Context) {
 		settingAdminWebEnabled:   strconv.FormatBool(true),
 		settingAdminUsername:     adminUsername,
 		settingAdminPasswordHash: string(hashBytes),
+		settingAdminRole:         "superadmin",
 		settingAdmin2FAEnabled:   strconv.FormatBool(admin2FAEnabled),
 		settingAdminSessionHours: strconv.Itoa(adminSessionHours),
 	}
@@ -295,6 +296,7 @@ func (a *app) handleSetupSubmit(c *gin.Context) {
 	a.cfg.AdminWebEnabled = true
 	a.cfg.AdminUsername = adminUsername
 	a.cfg.AdminPasswordHash = string(hashBytes)
+	a.cfg.AdminRole = "superadmin"
 	a.cfg.Admin2FAEnabled = admin2FAEnabled
 	a.cfg.Admin2FACode = admin2FACode
 	a.cfg.AdminSessionHours = adminSessionHours

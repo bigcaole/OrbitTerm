@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { AiExplainSshErrorResponse } from '../../services/ai';
 import type { HealthCheckResponse, SshDiagnosticLogEvent } from '../../services/inspector';
 import type { AppLogEntry } from '../../store/useAppLogStore';
+import { useI18n } from '../../i18n/useI18n';
 
 interface OrbitInspectorProps {
   open: boolean;
@@ -51,6 +52,7 @@ export function OrbitInspector({
   onRefreshHealth,
   onClearAppLogs
 }: OrbitInspectorProps): JSX.Element | null {
+  const { t, locale } = useI18n();
   const [aiAdvice, setAiAdvice] = useState<AiExplainSshErrorResponse | null>(null);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -90,7 +92,7 @@ export function OrbitInspector({
       const response = await onAskAi(terminalError, contextLines);
       setAiAdvice(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI 诊断暂不可用，请稍后重试。';
+      const message = error instanceof Error ? error.message : t('inspector.aiUnavailable');
       setAiError(message);
     } finally {
       setAiLoading(false);
@@ -120,22 +122,24 @@ export function OrbitInspector({
       <aside className="h-[min(86vh,860px)] w-full max-w-5xl overflow-hidden rounded-3xl border border-[#2a4266] bg-[#071121]/95 text-[#d7e5ff] shadow-2xl shadow-black/60">
         <div className="flex items-center justify-between border-b border-[#1d314f] px-4 py-3">
           <div>
-            <p className="text-sm font-semibold">Orbit Inspector</p>
-            <p className="text-[11px] text-[#8ea4c7]">开发者诊断工具</p>
+            <p className="text-sm font-semibold">{t('inspector.title')}</p>
+            <p className="text-[11px] text-[#8ea4c7]">{t('inspector.subtitle')}</p>
           </div>
           <button
             className="rounded-md px-2 py-1 text-xs text-[#9db2d4] hover:bg-white/10 hover:text-white"
             onClick={onClose}
             type="button"
           >
-            关闭
+            {t('inspector.close')}
           </button>
         </div>
 
         <div className="h-[calc(100%-58px)] space-y-4 overflow-auto p-4">
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
             <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">健康检查</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">
+                {t('inspector.section.health')}
+              </h3>
               <button
                 className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258]"
                 onClick={() => {
@@ -143,9 +147,9 @@ export function OrbitInspector({
                 }}
                 type="button"
               >
-                重新检查
-              </button>
-            </div>
+                  {t('inspector.recheck')}
+                </button>
+              </div>
             {healthReport ? (
               <div className="space-y-2">
                 {healthReport.items.map((item) => (
@@ -170,13 +174,15 @@ export function OrbitInspector({
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-[#8ea4c7]">尚未获取健康检查结果。</p>
+              <p className="text-xs text-[#8ea4c7]">{t('inspector.noHealthReport')}</p>
             )}
           </section>
 
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
             <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">AI 故障解释</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">
+                {t('inspector.section.ai')}
+              </h3>
               <button
                 className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={!terminalError || aiLoading}
@@ -185,15 +191,15 @@ export function OrbitInspector({
                 }}
                 type="button"
               >
-                {aiLoading ? '分析中...' : '问问 AI 怎么修'}
+                {aiLoading ? t('inspector.askingAi') : t('inspector.askAi')}
               </button>
             </div>
             {terminalError ? (
               <p className="rounded-md bg-rose-500/10 px-2 py-1.5 text-[11px] text-rose-200">
-                当前错误：{terminalError}
+                {t('inspector.currentError', { error: terminalError })}
               </p>
             ) : (
-              <p className="text-xs text-[#8ea4c7]">当前无 SSH 错误。</p>
+              <p className="text-xs text-[#8ea4c7]">{t('inspector.noSshError')}</p>
             )}
             {aiError && <p className="mt-2 text-[11px] text-rose-300">{aiError}</p>}
             {aiAdvice && (
@@ -211,7 +217,9 @@ export function OrbitInspector({
 
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
             <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">配置备份</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">
+                {t('inspector.section.backup')}
+              </h3>
               <div className="flex items-center gap-2">
                 <button
                   className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
@@ -221,7 +229,7 @@ export function OrbitInspector({
                   }}
                   type="button"
                 >
-                  {importBackupLoading ? '导入中...' : '导入加密备份'}
+                  {importBackupLoading ? t('inspector.importing') : t('inspector.importBackup')}
                 </button>
                 <button
                   className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
@@ -231,7 +239,7 @@ export function OrbitInspector({
                   }}
                   type="button"
                 >
-                  {backupLoading ? '导出中...' : '导出加密备份'}
+                  {backupLoading ? t('inspector.exporting') : t('inspector.exportBackup')}
                 </button>
               </div>
             </div>
@@ -242,13 +250,15 @@ export function OrbitInspector({
 
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
             <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">连接日志</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">
+                {t('inspector.section.connLogs')}
+              </h3>
               <span className="text-[11px] text-[#8ea4c7]">{visibleLogs.length} 条</span>
             </div>
 
             <div className="max-h-[420px] space-y-2 overflow-auto rounded-lg border border-[#1f3658] bg-[#050d1b] p-2">
               {visibleLogs.length === 0 && (
-                <p className="text-[11px] text-[#8ea4c7]">暂无日志。建立 SSH 连接后会实时显示握手与认证信息。</p>
+                <p className="text-[11px] text-[#8ea4c7]">{t('inspector.noConnLogs')}</p>
               )}
 
               {visibleLogs.map((item, index) => (
@@ -268,7 +278,9 @@ export function OrbitInspector({
 
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
             <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">全局日志</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">
+                {t('inspector.section.globalLogs')}
+              </h3>
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-[#8ea4c7]">{visibleAppLogs.length} 条</span>
                 <button
@@ -276,14 +288,14 @@ export function OrbitInspector({
                   onClick={onClearAppLogs}
                   type="button"
                 >
-                  清空
+                  {t('inspector.clear')}
                 </button>
               </div>
             </div>
 
             <div className="max-h-[320px] space-y-2 overflow-auto rounded-lg border border-[#1f3658] bg-[#050d1b] p-2">
               {visibleAppLogs.length === 0 && (
-                <p className="text-[11px] text-[#8ea4c7]">暂无全局日志。注册/登录/同步异常会显示在这里。</p>
+                <p className="text-[11px] text-[#8ea4c7]">{t('inspector.noGlobalLogs')}</p>
               )}
 
               {visibleAppLogs.map((item) => (
@@ -293,7 +305,7 @@ export function OrbitInspector({
                       {item.level}
                     </span>
                     <span className="text-[10px] text-[#90a7ca]">
-                      {new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false })}
+                      {new Date(item.timestamp).toLocaleString(locale, { hour12: false })}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-[#8ea4c7]">{item.scope}</p>

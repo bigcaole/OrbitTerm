@@ -551,6 +551,7 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 	planKey := strings.TrimSpace(c.PostForm("plan_key"))
 	plan, ok := planMap[planKey]
 	if !ok {
+		a.writeAdminAuditFromRequest(c, "admin.license.generate", "-", "failed", "unknown plan key")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("未知的套餐类型。"))
 		return
 	}
@@ -558,6 +559,7 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 	countRaw := strings.TrimSpace(c.PostForm("count"))
 	count, err := strconv.Atoi(countRaw)
 	if err != nil || count <= 0 || count > 20 {
+		a.writeAdminAuditFromRequest(c, "admin.license.generate", planKey, "failed", "invalid count")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("生成数量必须在 1 到 20 之间。"))
 		return
 	}
@@ -570,6 +572,7 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 
 	tx, err := a.db.BeginTx(c.Request.Context(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.license.generate", planKey, "failed", "begin tx failed")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("生成激活码失败，请稍后重试。"))
 		return
 	}
@@ -581,6 +584,7 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 	for i := 0; i < count; i++ {
 		code, genErr := generateActivationCode(plan.Key)
 		if genErr != nil {
+			a.writeAdminAuditFromRequest(c, "admin.license.generate", planKey, "failed", "generate activation code failed")
 			c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("生成激活码失败，请稍后重试。"))
 			return
 		}
@@ -599,6 +603,7 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 			nullIfEmpty(reservedEmail),
 			note,
 		); execErr != nil {
+			a.writeAdminAuditFromRequest(c, "admin.license.generate", planKey, "failed", "insert code failed")
 			c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("生成激活码失败，请稍后重试。"))
 			return
 		}
@@ -606,9 +611,17 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 	}
 
 	if err := tx.Commit(); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.license.generate", planKey, "failed", "commit failed")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("生成激活码失败，请稍后重试。"))
 		return
 	}
+	a.writeAdminAuditFromRequest(
+		c,
+		"admin.license.generate",
+		planKey,
+		"ok",
+		fmt.Sprintf("generated=%d,reserved=%s", len(generatedCodes), reservedEmail),
+	)
 
 	message := fmt.Sprintf("已生成 %d 个激活码。", len(generatedCodes))
 	c.Redirect(
@@ -620,6 +633,7 @@ func (a *app) handleAdminGenerateLicenseCodes(c *gin.Context) {
 func (a *app) handleAdminDisableLicenseCode(c *gin.Context) {
 	codeID := strings.TrimSpace(c.PostForm("code_id"))
 	if codeID == "" {
+		a.writeAdminAuditFromRequest(c, "admin.license.disable", "-", "failed", "missing code_id")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("缺少 code_id。"))
 		return
 	}
@@ -631,14 +645,17 @@ func (a *app) handleAdminDisableLicenseCode(c *gin.Context) {
 		codeID,
 	)
 	if err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.license.disable", codeID, "failed", "db update failed")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("禁用激活码失败，请稍后重试。"))
 		return
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
+		a.writeAdminAuditFromRequest(c, "admin.license.disable", codeID, "failed", "not found or already disabled")
 		c.Redirect(http.StatusFound, "/admin/licenses?error="+url.QueryEscape("激活码不存在或已禁用。"))
 		return
 	}
+	a.writeAdminAuditFromRequest(c, "admin.license.disable", codeID, "ok", "license code disabled")
 	c.Redirect(http.StatusFound, "/admin/licenses?notice="+url.QueryEscape("激活码已禁用。"))
 }
 
