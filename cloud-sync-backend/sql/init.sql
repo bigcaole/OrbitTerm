@@ -81,6 +81,34 @@ CREATE TABLE IF NOT EXISTS admin_audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS sync_event_logs (
+  id BIGSERIAL PRIMARY KEY,
+  trace_id TEXT NOT NULL,
+  user_id UUID,
+  user_email TEXT NOT NULL DEFAULT '',
+  operation TEXT NOT NULL,
+  result TEXT NOT NULL,
+  error_code TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  http_status INTEGER NOT NULL DEFAULT 0,
+  request_version BIGINT,
+  accepted_version BIGINT,
+  remote_version BIGINT,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sync_push_idempotency (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  accepted_version BIGINT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, idempotency_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_vault_blobs_updated_at ON vault_blobs(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_vault_blobs_version ON vault_blobs(version);
 CREATE INDEX IF NOT EXISTS idx_snippets_user_updated_at ON snippets(user_id, updated_at DESC);
@@ -94,3 +122,8 @@ CREATE INDEX IF NOT EXISTS idx_user_sync_entitlements_expires_at ON user_sync_en
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_actor ON admin_audit_logs(actor_username);
+CREATE INDEX IF NOT EXISTS idx_sync_event_logs_created_at ON sync_event_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_event_logs_result_created_at ON sync_event_logs(result, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_event_logs_error_code_created_at ON sync_event_logs(error_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_event_logs_user_created_at ON sync_event_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_push_idempotency_created_at ON sync_push_idempotency(created_at DESC);

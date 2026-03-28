@@ -19,6 +19,7 @@ import {
 import {
   activateCloudLicense,
   CloudSyncConflictError,
+  CloudSyncRequestError,
   clearCloudSyncSession,
   fetchCloudSyncPolicy,
   getCloudLicenseStatus,
@@ -695,15 +696,67 @@ const extractErrorMessage = (error: unknown, fallback: string): string => {
   return unwrapErrorLikeMessage(error) ?? fallback;
 };
 
+const readCloudErrorCode = (error: unknown): string | null => {
+  if (error instanceof CloudSyncRequestError || error instanceof CloudSyncConflictError) {
+    return typeof error.code === 'string' && error.code.trim() ? error.code.trim() : null;
+  }
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+  const value = (error as { code?: unknown }).code;
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
+const readCloudTraceId = (error: unknown): string | null => {
+  if (error instanceof CloudSyncRequestError || error instanceof CloudSyncConflictError) {
+    return typeof error.traceId === 'string' && error.traceId.trim() ? error.traceId.trim() : null;
+  }
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+  const value = (error as { traceId?: unknown }).traceId;
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
+const appendCloudErrorMeta = (message: string, error: unknown): string => {
+  const code = readCloudErrorCode(error);
+  const traceId = readCloudTraceId(error);
+  if (!code && !traceId) {
+    return message;
+  }
+  const parts: string[] = [];
+  if (code) {
+    parts.push(`错误码:${code}`);
+  }
+  if (traceId) {
+    parts.push(`TraceID:${traceId}`);
+  }
+  return `${message}（${parts.join('，')}）`;
+};
+
 const buildCloudPullErrorMessage = (error: unknown, fallback: string): string => {
   const message = extractErrorMessage(error, fallback);
   if (isLikelyMasterPasswordMismatch(message)) {
-    return '云端数据解密失败：当前设备主密码与云端不一致。请使用与其他设备一致的主密码解锁后再拉取。';
+    return appendCloudErrorMeta(
+      '云端数据解密失败：当前设备主密码与云端不一致。请使用与其他设备一致的主密码解锁后再拉取。',
+      error
+    );
   }
   if (isLikelyLegacyPayloadMismatch(message)) {
-    return '云端数据结构兼容性校验失败，请升级到最新版后重试；若仍失败，请在已有可用设备执行一次“保存并推送”后再拉取。';
+    return appendCloudErrorMeta(
+      '云端数据结构兼容性校验失败，请升级到最新版后重试；若仍失败，请在已有可用设备执行一次“保存并推送”后再拉取。',
+      error
+    );
   }
-  return message || fallback;
+  return appendCloudErrorMeta(message || fallback, error);
 };
 
 const persistCloudCursor = (
@@ -1191,7 +1244,9 @@ export const useHostStore = create<HostState>((set, get) => ({
           source,
           force,
           baseVersion,
-          acceptedVersion: pushResult.acceptedVersion
+          acceptedVersion: pushResult.acceptedVersion,
+          traceId: pushResult.traceId ?? null,
+          idempotencyReused: pushResult.idempotencyReused === true
         });
       } catch (error) {
         if (error instanceof CloudSyncConflictError) {
@@ -1223,33 +1278,39 @@ export const useHostStore = create<HostState>((set, get) => ({
               toast.message('检测到云端有更新，已自动合并至最新版本。');
               logAppWarn('cloud-sync', '云端推送冲突，已自动拉取最新版本', {
                 source,
-                latestVersion: latest.version
+                latestVersion: latest.version,
+                code: error.code ?? null,
+                traceId: error.traceId ?? latest.traceId ?? null
               });
               return;
             } catch (importError) {
               const fallback = '云端冲突恢复失败，请手动执行拉取。';
-              const message = extractErrorMessage(importError, fallback);
+              const message = appendCloudErrorMeta(extractErrorMessage(importError, fallback), importError);
               set({
                 isSyncingCloud: false,
                 cloudSyncError: message || fallback
               });
               logAppError('cloud-sync', '云端冲突恢复失败', {
                 source,
-                message: message || fallback
+                message: message || fallback,
+                traceId: readCloudTraceId(importError),
+                code: readCloudErrorCode(importError)
               });
               return;
             }
           }
         }
         const fallback = '自动上传云端失败。';
-        const message = extractErrorMessage(error, fallback);
+        const message = appendCloudErrorMeta(extractErrorMessage(error, fallback), error);
         set({
           isSyncingCloud: false,
           cloudSyncError: message || fallback
         });
         logAppError('cloud-sync', '云端推送失败', {
           source,
-          message: message || fallback
+          message: message || fallback,
+          traceId: readCloudTraceId(error),
+          code: readCloudErrorCode(error)
         });
       }
     });
@@ -1296,7 +1357,8 @@ export const useHostStore = create<HostState>((set, get) => ({
             logAppInfo('cloud-sync', '云端为空，已用本地金库完成初始化推送', {
               source,
               localVaultVersion: localBlob.version,
-              acceptedVersion: seeded.acceptedVersion
+              acceptedVersion: seeded.acceptedVersion,
+              traceId: seeded.traceId ?? null
             });
             return;
           }
@@ -1329,7 +1391,8 @@ export const useHostStore = create<HostState>((set, get) => ({
           logAppInfo('cloud-sync', '云端拉取检查完成，无需更新', {
             source,
             remoteVersion: remote.version,
-            localCloudVersion
+            localCloudVersion,
+            traceId: remote.traceId ?? null
           });
           return;
         }
@@ -1355,7 +1418,8 @@ export const useHostStore = create<HostState>((set, get) => ({
             source,
             localVaultVersion: localBlob.version,
             remoteVersion: remote.version,
-            acceptedVersion: reconciled.acceptedVersion
+            acceptedVersion: reconciled.acceptedVersion,
+            traceId: reconciled.traceId ?? remote.traceId ?? null
           });
           return;
         }
@@ -1391,7 +1455,8 @@ export const useHostStore = create<HostState>((set, get) => ({
           source,
           force,
           remoteVersion: remote.version,
-          importedVersion: imported.version
+          importedVersion: imported.version,
+          traceId: remote.traceId ?? null
         });
       } catch (error) {
         if (error instanceof CloudSyncConflictError) {
@@ -1424,14 +1489,16 @@ export const useHostStore = create<HostState>((set, get) => ({
               return;
             } catch (importError) {
               const fallback = '云端冲突恢复失败，请手动执行拉取。';
-              const message = extractErrorMessage(importError, fallback);
+              const message = appendCloudErrorMeta(extractErrorMessage(importError, fallback), importError);
               set({
                 isSyncingCloud: false,
                 cloudSyncError: message || fallback
               });
               logAppError('cloud-sync', '拉取冲突恢复失败', {
                 source,
-                message: message || fallback
+                message: message || fallback,
+                traceId: readCloudTraceId(importError),
+                code: readCloudErrorCode(importError)
               });
               return;
             }
@@ -1446,7 +1513,9 @@ export const useHostStore = create<HostState>((set, get) => ({
         logAppError('cloud-sync', '云端拉取失败', {
           source,
           force,
-          message: message || fallback
+          message: message || fallback,
+          traceId: readCloudTraceId(error),
+          code: readCloudErrorCode(error)
         });
       }
     });

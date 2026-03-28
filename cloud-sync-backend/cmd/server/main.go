@@ -104,8 +104,10 @@ type syncPushRequest struct {
 }
 
 type syncPushResponse struct {
-	AcceptedVersion int64  `json:"acceptedVersion"`
-	UpdatedAt       string `json:"updatedAt"`
+	AcceptedVersion   int64  `json:"acceptedVersion"`
+	UpdatedAt         string `json:"updatedAt"`
+	TraceID           string `json:"traceId,omitempty"`
+	IdempotencyReused bool   `json:"idempotencyReused,omitempty"`
 }
 
 type syncPullResponse struct {
@@ -113,17 +115,22 @@ type syncPullResponse struct {
 	Version             int64  `json:"version,omitempty"`
 	EncryptedBlobBase64 string `json:"encryptedBlobBase64,omitempty"`
 	UpdatedAt           string `json:"updatedAt,omitempty"`
+	TraceID             string `json:"traceId,omitempty"`
 }
 
 type syncStatusResponse struct {
 	HasData   bool   `json:"hasData"`
 	Version   int64  `json:"version"`
 	UpdatedAt string `json:"updatedAt,omitempty"`
+	TraceID   string `json:"traceId,omitempty"`
 }
 
 type syncConflictResponse struct {
-	Message string           `json:"message"`
-	Latest  syncPullResponse `json:"latest"`
+	Message   string           `json:"message"`
+	Code      string           `json:"code,omitempty"`
+	TraceID   string           `json:"traceId,omitempty"`
+	Retryable bool             `json:"retryable,omitempty"`
+	Latest    syncPullResponse `json:"latest"`
 }
 
 type logoutDeviceRequest struct {
@@ -200,6 +207,7 @@ func main() {
 
 	router := gin.New()
 	router.Use(gin.Recovery())
+	router.Use(a.traceIDMiddleware())
 	router.Use(a.httpsOnlyMiddleware())
 	router.Use(a.corsMiddleware())
 	router.Use(a.requestBodyLimitMiddleware())
@@ -323,6 +331,32 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			user_agent TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS sync_event_logs (
+			id BIGSERIAL PRIMARY KEY,
+			trace_id TEXT NOT NULL,
+			user_id UUID,
+			user_email TEXT NOT NULL DEFAULT '',
+			operation TEXT NOT NULL,
+			result TEXT NOT NULL,
+			error_code TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL DEFAULT '',
+			http_status INTEGER NOT NULL DEFAULT 0,
+			request_version BIGINT,
+			accepted_version BIGINT,
+			remote_version BIGINT,
+			idempotency_key TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS sync_push_idempotency (
+			id BIGSERIAL PRIMARY KEY,
+			user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			idempotency_key TEXT NOT NULL,
+			request_hash TEXT NOT NULL,
+			accepted_version BIGINT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(user_id, idempotency_key)
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_updated_at ON vault_blobs(updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_version ON vault_blobs(version)`,
 		`CREATE INDEX IF NOT EXISTS idx_snippets_user_updated_at ON snippets(user_id, updated_at DESC)`,
@@ -336,6 +370,11 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(action)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_actor ON admin_audit_logs(actor_username)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_event_logs_created_at ON sync_event_logs(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_event_logs_result_created_at ON sync_event_logs(result, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_event_logs_error_code_created_at ON sync_event_logs(error_code, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_event_logs_user_created_at ON sync_event_logs(user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_push_idempotency_created_at ON sync_push_idempotency(created_at DESC)`,
 	}
 
 	for _, stmt := range statements {
@@ -610,6 +649,10 @@ func (a *app) rateLimitMiddleware(limiter *rateLimiter, message string) gin.Hand
 			c.Next()
 			return
 		}
+		if isSyncRequest(c) {
+			a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusTooManyRequests, syncErrorCodeRateLimited, message, true, syncEventVersions{})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 			"message": message,
 		})
@@ -620,6 +663,10 @@ func (a *app) requestBodyLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		limit := a.getRuntimeSettings().MaxRequestBodyBytes
 		if c.Request.ContentLength > limit {
+			if isSyncRequest(c) {
+				a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusRequestEntityTooLarge, syncErrorCodeBodyTooLarge, "请求体过大，请精简后重试。", false, syncEventVersions{})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
 				"message": "请求体过大，请精简后重试。",
 			})
@@ -652,6 +699,10 @@ func (a *app) httpsOnlyMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		if isSyncRequest(c) {
+			a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusUpgradeRequired, syncErrorCodeHTTPSRequired, "同步服务仅接受 HTTPS 请求，请检查反向代理与证书配置。", false, syncEventVersions{})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusUpgradeRequired, gin.H{
 			"message": "同步服务仅接受 HTTPS 请求，请检查反向代理与证书配置。",
 		})
@@ -677,7 +728,7 @@ func (a *app) corsMiddleware() gin.HandlerFunc {
 		}
 
 		c.Header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Idempotency-Key,X-Trace-Id")
 
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -968,21 +1019,36 @@ func loadLatestSyncFromQuerier(
 
 func (a *app) handleSyncStatus(c *gin.Context) {
 	userID := c.GetString("userID")
+	userEmail := strings.TrimSpace(c.GetString("username"))
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"message": "登录状态已失效，请重新登录。"})
+		a.writeSyncError(c, syncOperationStatus, http.StatusUnauthorized, syncErrorCodeAuthRequired, "登录状态已失效，请重新登录。", false, syncEventVersions{})
 		return
 	}
 
 	latest, err := loadLatestSyncFromQuerier(c.Request.Context(), a.db, userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "查询同步状态失败，请稍后重试。"})
+		a.writeSyncError(c, syncOperationStatus, http.StatusInternalServerError, syncErrorCodeStatusFailed, "查询同步状态失败，请稍后重试。", true, syncEventVersions{})
 		return
 	}
 
+	traceID := traceIDFromContext(c)
+	latest.TraceID = traceID
+	a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+		TraceID:    traceID,
+		UserID:     strings.TrimSpace(userID),
+		UserEmail:  userEmail,
+		Operation:  syncOperationStatus,
+		Result:     syncEventResultOK,
+		HTTPStatus: http.StatusOK,
+		Versions: syncEventVersions{
+			RemoteVersion: &latest.Version,
+		},
+	})
 	c.JSON(http.StatusOK, syncStatusResponse{
 		HasData:   latest.HasData,
 		Version:   latest.Version,
 		UpdatedAt: latest.UpdatedAt,
+		TraceID:   traceID,
 	})
 }
 
@@ -1018,43 +1084,98 @@ func parseSyncPushVersion(raw any) (int64, error) {
 
 func (a *app) handleSyncPush(c *gin.Context) {
 	userID := c.GetString("userID")
-	username := c.GetString("username")
-	if userID == "" || username == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"message": "登录状态已失效，请重新登录。"})
+	userEmail := strings.TrimSpace(c.GetString("username"))
+	if userID == "" || userEmail == "" {
+		a.writeSyncError(c, syncOperationPush, http.StatusUnauthorized, syncErrorCodeAuthRequired, "登录状态已失效，请重新登录。", false, syncEventVersions{})
 		return
 	}
+	traceID := traceIDFromContext(c)
 
 	var req syncPushRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		if isRequestBodyTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": "请求体过大，请精简后重试。"})
+			a.writeSyncError(c, syncOperationPush, http.StatusRequestEntityTooLarge, syncErrorCodeBodyTooLarge, "请求体过大，请精简后重试。", false, syncEventVersions{})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"message": "同步参数无效，请检查版本号和数据。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusBadRequest, syncErrorCodeInvalidRequest, "同步参数无效，请检查版本号和数据。", false, syncEventVersions{})
 		return
 	}
 	reqVersion, versionErr := parseSyncPushVersion(req.Version)
 	if versionErr != nil || reqVersion < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "同步参数无效，请检查版本号和数据。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusBadRequest, syncErrorCodeInvalidVersion, "同步参数无效，请检查版本号和数据。", false, syncEventVersions{RequestVersion: &reqVersion})
 		return
 	}
 	reqBlob := strings.TrimSpace(req.EncryptedBlobBase64)
 	if reqBlob == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "同步参数无效，请检查版本号和数据。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusBadRequest, syncErrorCodeInvalidRequest, "同步参数无效，请检查版本号和数据。", false, syncEventVersions{RequestVersion: &reqVersion})
 		return
 	}
 
 	rawBlob, err := base64.StdEncoding.DecodeString(reqBlob)
 	if err != nil || len(rawBlob) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "加密数据格式错误。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusBadRequest, syncErrorCodeInvalidBlob, "加密数据格式错误。", false, syncEventVersions{RequestVersion: &reqVersion})
 		return
+	}
+
+	idempotencyKey, keyErr := normalizeIdempotencyKey(c.GetHeader(syncPushIdempotencyHeader))
+	if keyErr != nil {
+		a.writeSyncError(c, syncOperationPush, http.StatusBadRequest, syncErrorCodeInvalidIdempotencyKey, "同步请求幂等键格式无效。", false, syncEventVersions{RequestVersion: &reqVersion})
+		return
+	}
+	requestHash := buildSyncPushRequestHash(reqVersion, rawBlob)
+	if idempotencyKey != "" {
+		var (
+			storedHash        string
+			storedAcceptedVer int64
+			storedUpdatedAt   time.Time
+		)
+		lookupErr := a.db.QueryRowContext(
+			c.Request.Context(),
+			`SELECT request_hash, accepted_version, updated_at
+			 FROM sync_push_idempotency
+			 WHERE user_id = $1 AND idempotency_key = $2`,
+			userID,
+			idempotencyKey,
+		).Scan(&storedHash, &storedAcceptedVer, &storedUpdatedAt)
+		if lookupErr == nil {
+			if storedHash != requestHash {
+				a.writeSyncError(c, syncOperationPush, http.StatusConflict, syncErrorCodeIdempotencyReused, "同一个幂等键不能对应不同请求内容，请刷新后重试。", false, syncEventVersions{RequestVersion: &reqVersion, AcceptedVersion: &storedAcceptedVer})
+				return
+			}
+			updatedAtText := storedUpdatedAt.UTC().Format(time.RFC3339)
+			a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+				TraceID:        traceID,
+				UserID:         strings.TrimSpace(userID),
+				UserEmail:      userEmail,
+				Operation:      syncOperationPush,
+				Result:         syncEventResultOK,
+				HTTPStatus:     http.StatusOK,
+				IdempotencyKey: idempotencyKey,
+				Versions: syncEventVersions{
+					RequestVersion:  &reqVersion,
+					AcceptedVersion: &storedAcceptedVer,
+					RemoteVersion:   &storedAcceptedVer,
+				},
+			})
+			c.JSON(http.StatusOK, syncPushResponse{
+				AcceptedVersion:   storedAcceptedVer,
+				UpdatedAt:         updatedAtText,
+				TraceID:           traceID,
+				IdempotencyReused: true,
+			})
+			return
+		}
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
+			a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
+			return
+		}
 	}
 
 	// 服务器端权威时间：忽略客户端时间，统一使用 UTC 当前时间。
 	serverUpdatedAt := time.Now().UTC()
 	tx, err := a.db.BeginTx(c.Request.Context(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "上传云端失败，请稍后重试。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
 		return
 	}
 	defer func() {
@@ -1078,36 +1199,85 @@ func (a *app) handleSyncPush(c *gin.Context) {
 		rawBlob,
 		serverUpdatedAt,
 		userID,
-		username,
+		userEmail,
 		reqVersion,
 	).Scan(&acceptedVersion, &acceptedUpdatedAt)
 	if updateErr == nil {
 		if commitErr := tx.Commit(); commitErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "上传云端失败，请稍后重试。"})
+			a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
 			return
 		}
+		if idempotencyKey != "" {
+			_, _ = a.db.ExecContext(
+				c.Request.Context(),
+				`INSERT INTO sync_push_idempotency (user_id, idempotency_key, request_hash, accepted_version, updated_at)
+				 VALUES ($1, $2, $3, $4, $5)
+				 ON CONFLICT (user_id, idempotency_key) DO NOTHING`,
+				userID,
+				idempotencyKey,
+				requestHash,
+				acceptedVersion,
+				acceptedUpdatedAt,
+			)
+		}
+		if shouldCleanupSyncIdempotency(time.Now().UTC()) {
+			a.cleanupSyncIdempotency(c.Request.Context())
+		}
+		a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+			TraceID:        traceID,
+			UserID:         strings.TrimSpace(userID),
+			UserEmail:      userEmail,
+			Operation:      syncOperationPush,
+			Result:         syncEventResultOK,
+			HTTPStatus:     http.StatusOK,
+			IdempotencyKey: idempotencyKey,
+			Versions: syncEventVersions{
+				RequestVersion:  &reqVersion,
+				AcceptedVersion: &acceptedVersion,
+				RemoteVersion:   &acceptedVersion,
+			},
+		})
 		c.JSON(http.StatusOK, syncPushResponse{
 			AcceptedVersion: acceptedVersion,
 			UpdatedAt:       acceptedUpdatedAt.UTC().Format(time.RFC3339),
+			TraceID:         traceID,
 		})
 		return
 	}
 	if !errors.Is(updateErr, sql.ErrNoRows) {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "上传云端失败，请稍后重试。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
 		return
 	}
 
 	latest, latestErr := loadLatestSyncFromQuerier(c.Request.Context(), tx, userID)
 	if latestErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "上传云端失败，请稍后重试。"})
+		a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
 		return
 	}
 
 	if !latest.HasData {
 		if reqVersion != 0 {
+			latest.TraceID = traceID
+			a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+				TraceID:    traceID,
+				UserID:     strings.TrimSpace(userID),
+				UserEmail:  userEmail,
+				Operation:  syncOperationPush,
+				Result:     syncEventResultConflict,
+				ErrorCode:  syncErrorCodeVersionConflict,
+				Message:    "云端版本已变化，请先拉取最新数据后再重试。",
+				HTTPStatus: http.StatusConflict,
+				Versions: syncEventVersions{
+					RequestVersion: &reqVersion,
+					RemoteVersion:  &latest.Version,
+				},
+			})
 			c.JSON(http.StatusConflict, syncConflictResponse{
-				Message: "云端版本已变化，请先拉取最新数据后再重试。",
-				Latest:  latest,
+				Message:   "云端版本已变化，请先拉取最新数据后再重试。",
+				Code:      syncErrorCodeVersionConflict,
+				TraceID:   traceID,
+				Retryable: false,
+				Latest:    latest,
 			})
 			return
 		}
@@ -1124,39 +1294,100 @@ func (a *app) handleSyncPush(c *gin.Context) {
 			serverUpdatedAt,
 		).Scan(&insertedVersion, &insertedUpdatedAt)
 		if insertErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "上传云端失败，请稍后重试。"})
+			a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
 			return
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "上传云端失败，请稍后重试。"})
+			a.writeSyncError(c, syncOperationPush, http.StatusInternalServerError, syncErrorCodeUploadFailed, "上传云端失败，请稍后重试。", true, syncEventVersions{RequestVersion: &reqVersion})
 			return
 		}
+		if idempotencyKey != "" {
+			_, _ = a.db.ExecContext(
+				c.Request.Context(),
+				`INSERT INTO sync_push_idempotency (user_id, idempotency_key, request_hash, accepted_version, updated_at)
+				 VALUES ($1, $2, $3, $4, $5)
+				 ON CONFLICT (user_id, idempotency_key) DO NOTHING`,
+				userID,
+				idempotencyKey,
+				requestHash,
+				insertedVersion,
+				insertedUpdatedAt,
+			)
+		}
+		if shouldCleanupSyncIdempotency(time.Now().UTC()) {
+			a.cleanupSyncIdempotency(c.Request.Context())
+		}
+		a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+			TraceID:        traceID,
+			UserID:         strings.TrimSpace(userID),
+			UserEmail:      userEmail,
+			Operation:      syncOperationPush,
+			Result:         syncEventResultOK,
+			HTTPStatus:     http.StatusOK,
+			IdempotencyKey: idempotencyKey,
+			Versions: syncEventVersions{
+				RequestVersion:  &reqVersion,
+				AcceptedVersion: &insertedVersion,
+				RemoteVersion:   &insertedVersion,
+			},
+		})
 		c.JSON(http.StatusOK, syncPushResponse{
 			AcceptedVersion: insertedVersion,
 			UpdatedAt:       insertedUpdatedAt.UTC().Format(time.RFC3339),
+			TraceID:         traceID,
 		})
 		return
 	}
-
+	latest.TraceID = traceID
+	a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+		TraceID:    traceID,
+		UserID:     strings.TrimSpace(userID),
+		UserEmail:  userEmail,
+		Operation:  syncOperationPush,
+		Result:     syncEventResultConflict,
+		ErrorCode:  syncErrorCodeVersionConflict,
+		Message:    "检测到版本冲突，云端已有更新，请先拉取并合并后再提交。",
+		HTTPStatus: http.StatusConflict,
+		Versions: syncEventVersions{
+			RequestVersion: &reqVersion,
+			RemoteVersion:  &latest.Version,
+		},
+	})
 	c.JSON(http.StatusConflict, syncConflictResponse{
-		Message: "检测到版本冲突，云端已有更新，请先拉取并合并后再提交。",
-		Latest:  latest,
+		Message:   "检测到版本冲突，云端已有更新，请先拉取并合并后再提交。",
+		Code:      syncErrorCodeVersionConflict,
+		TraceID:   traceID,
+		Retryable: false,
+		Latest:    latest,
 	})
 }
 
 func (a *app) handleSyncPull(c *gin.Context) {
 	userID := c.GetString("userID")
+	userEmail := strings.TrimSpace(c.GetString("username"))
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"message": "登录状态已失效，请重新登录。"})
+		a.writeSyncError(c, syncOperationPull, http.StatusUnauthorized, syncErrorCodeAuthRequired, "登录状态已失效，请重新登录。", false, syncEventVersions{})
 		return
 	}
 
 	latest, err := loadLatestSyncFromQuerier(c.Request.Context(), a.db, userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "拉取云端数据失败，请稍后重试。"})
+		a.writeSyncError(c, syncOperationPull, http.StatusInternalServerError, syncErrorCodePullFailed, "拉取云端数据失败，请稍后重试。", true, syncEventVersions{})
 		return
 	}
-
+	traceID := traceIDFromContext(c)
+	latest.TraceID = traceID
+	a.recordSyncEvent(c.Request.Context(), syncEventRecord{
+		TraceID:    traceID,
+		UserID:     strings.TrimSpace(userID),
+		UserEmail:  userEmail,
+		Operation:  syncOperationPull,
+		Result:     syncEventResultOK,
+		HTTPStatus: http.StatusOK,
+		Versions: syncEventVersions{
+			RemoteVersion: &latest.Version,
+		},
+	})
 	c.JSON(http.StatusOK, latest)
 }
 
@@ -1304,6 +1535,10 @@ func (a *app) jwtAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rawAuth := strings.TrimSpace(c.GetHeader("Authorization"))
 		if rawAuth == "" || !strings.HasPrefix(strings.ToLower(rawAuth), "bearer ") {
+			if isSyncRequest(c) {
+				a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusUnauthorized, syncErrorCodeAuthRequired, "缺少有效的登录令牌，请先登录。", false, syncEventVersions{})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"message": "缺少有效的登录令牌，请先登录。",
 			})
@@ -1318,6 +1553,10 @@ func (a *app) jwtAuthMiddleware() gin.HandlerFunc {
 			return []byte(a.cfg.JWTSecret), nil
 		})
 		if err != nil {
+			if isSyncRequest(c) {
+				a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusUnauthorized, syncErrorCodeTokenInvalid, "登录令牌无效或已过期，请重新登录。", false, syncEventVersions{})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"message": "登录令牌无效或已过期，请重新登录。",
 			})
@@ -1326,6 +1565,10 @@ func (a *app) jwtAuthMiddleware() gin.HandlerFunc {
 
 		claims, ok := token.Claims.(*jwtClaims)
 		if !ok || !token.Valid || strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.Username) == "" || strings.TrimSpace(claims.ID) == "" {
+			if isSyncRequest(c) {
+				a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusUnauthorized, syncErrorCodeTokenInvalid, "登录令牌无效或已过期，请重新登录。", false, syncEventVersions{})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"message": "登录令牌无效或已过期，请重新登录。",
 			})
@@ -1350,6 +1593,10 @@ func (a *app) jwtAuthMiddleware() gin.HandlerFunc {
 			if errors.Is(err, sql.ErrNoRows) {
 				active = false
 			} else {
+				if isSyncRequest(c) {
+					a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusInternalServerError, syncErrorCodeAuthCheckFailed, "登录状态校验失败，请稍后重试。", true, syncEventVersions{})
+					return
+				}
 				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 					"message": "登录状态校验失败，请稍后重试。",
 				})
@@ -1360,6 +1607,10 @@ func (a *app) jwtAuthMiddleware() gin.HandlerFunc {
 		}
 
 		if !active {
+			if isSyncRequest(c) {
+				a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusUnauthorized, syncErrorCodeDeviceRevoked, "该设备登录已失效，请重新登录。", false, syncEventVersions{})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"message": "该设备登录已失效，请重新登录。",
 			})

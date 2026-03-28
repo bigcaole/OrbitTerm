@@ -28,6 +28,8 @@ export interface SyncPushRequest {
 export interface SyncPushResponse {
   acceptedVersion: number;
   updatedAt: string;
+  traceId?: string;
+  idempotencyReused?: boolean;
 }
 
 export interface SyncPullResponse {
@@ -35,12 +37,14 @@ export interface SyncPullResponse {
   version?: number;
   encryptedBlobBase64?: string;
   updatedAt?: string;
+  traceId?: string;
 }
 
 export interface SyncStatusResponse {
   hasData: boolean;
   version: number;
   updatedAt?: string;
+  traceId?: string;
 }
 
 export interface CloudSyncCursor {
@@ -74,6 +78,14 @@ export interface CloudDeviceItem {
   isCurrent: boolean;
 }
 
+interface CloudErrorPayload {
+  message?: string;
+  code?: string;
+  traceId?: string;
+  trace_id?: string;
+  retryable?: boolean;
+}
+
 interface CloudDevicesResponse {
   devices: CloudDeviceItem[];
 }
@@ -90,11 +102,49 @@ interface LicenseActivateResponse {
 
 export class CloudSyncConflictError extends Error {
   latest: SyncPullResponse | null;
+  code?: string;
+  traceId?: string;
+  retryable: boolean;
 
-  constructor(message: string, latest: SyncPullResponse | null) {
+  constructor(
+    message: string,
+    latest: SyncPullResponse | null,
+    options?: {
+      code?: string;
+      traceId?: string;
+      retryable?: boolean;
+    }
+  ) {
     super(message);
     this.name = 'CloudSyncConflictError';
     this.latest = latest;
+    this.code = options?.code;
+    this.traceId = options?.traceId;
+    this.retryable = options?.retryable === true;
+  }
+}
+
+export class CloudSyncRequestError extends Error {
+  status: number;
+  code?: string;
+  traceId?: string;
+  retryable: boolean;
+
+  constructor(
+    message: string,
+    options: {
+      status: number;
+      code?: string;
+      traceId?: string;
+      retryable?: boolean;
+    }
+  ) {
+    super(message);
+    this.name = 'CloudSyncRequestError';
+    this.status = options.status;
+    this.code = options.code;
+    this.traceId = options.traceId;
+    this.retryable = options.retryable === true;
   }
 }
 
@@ -109,6 +159,121 @@ const ensureHttpsEndpoint = (apiBaseUrl: string): string => {
     throw new Error('同步服务必须使用 HTTPS 地址。');
   }
   return normalized;
+};
+
+const RETRY_BACKOFF_MS = [450, 1100];
+
+const sleep = async (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+
+const randomJitter = (): number => {
+  return Math.floor(Math.random() * 120);
+};
+
+const readTraceIdFromHeaders = (response: Response): string | undefined => {
+  const direct = response.headers.get('x-trace-id');
+  if (!direct) {
+    return undefined;
+  }
+  const trimmed = direct.trim();
+  return trimmed || undefined;
+};
+
+const parseErrorPayload = async (
+  response: Response,
+  fallbackMessage: string
+): Promise<{
+  message: string;
+  code?: string;
+  traceId?: string;
+  retryable: boolean;
+  latest?: unknown;
+}> => {
+  let payload: (CloudErrorPayload & { latest?: unknown }) | null = null;
+  try {
+    payload = (await response.json()) as CloudErrorPayload & { latest?: unknown };
+  } catch (_error) {
+    payload = null;
+  }
+  const message = payload?.message?.trim() || fallbackMessage;
+  const code = payload?.code?.trim();
+  const traceIdFromPayload = payload?.traceId?.trim() || payload?.trace_id?.trim();
+  const traceId = traceIdFromPayload || readTraceIdFromHeaders(response);
+  const retryableByStatus = response.status === 429 || response.status >= 500;
+  return {
+    message,
+    code: code || undefined,
+    traceId: traceId || undefined,
+    retryable: payload?.retryable === true || retryableByStatus,
+    latest: payload?.latest
+  };
+};
+
+const shouldRetryCloudError = (error: unknown): boolean => {
+  if (error instanceof CloudSyncConflictError) {
+    return false;
+  }
+  if (error instanceof CloudSyncRequestError) {
+    return error.retryable || error.status === 429 || error.status >= 500;
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return true;
+  }
+  if (error instanceof TypeError) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const lowered = message.toLowerCase();
+  if (lowered.includes('network') || lowered.includes('failed to fetch')) {
+    return true;
+  }
+  if (lowered.includes('timeout') || lowered.includes('超时')) {
+    return true;
+  }
+  return false;
+};
+
+const withRetry = async <T>(
+  scope: string,
+  action: (attempt: number) => Promise<T>,
+  maxAttempts = 3
+): Promise<T> => {
+  let attempt = 0;
+  let lastError: unknown = null;
+  while (attempt < maxAttempts) {
+    attempt += 1;
+    try {
+      return await action(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !shouldRetryCloudError(error)) {
+        throw error;
+      }
+      const delayBase =
+        RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)] ??
+        RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1] ??
+        1000;
+      const delay = delayBase + randomJitter();
+      logAppWarn('cloud-sync', '云同步请求将自动重试', {
+        scope,
+        attempt,
+        maxAttempts,
+        delay,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      await sleep(delay);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('云同步请求失败。');
+};
+
+const createIdempotencyKey = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  return `idem-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 12)}`;
 };
 
 const withTimeout = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -139,20 +304,19 @@ const withTimeout = async (input: RequestInfo | URL, init?: RequestInit): Promis
 
 const readJson = async <T>(response: Response, fallbackMessage: string): Promise<T> => {
   if (!response.ok) {
-    let detail = fallbackMessage;
-    try {
-      const payload = (await response.json()) as { message?: string };
-      if (payload.message) {
-        detail = payload.message;
-      }
-    } catch (_error) {
-      // Ignore parse errors.
-    }
+    const payload = await parseErrorPayload(response, fallbackMessage);
     logAppWarn('cloud-sync', `云同步请求返回异常状态 ${response.status}`, {
       url: response.url,
-      message: detail
+      message: payload.message,
+      code: payload.code,
+      traceId: payload.traceId
     });
-    throw new Error(detail);
+    throw new CloudSyncRequestError(payload.message, {
+      status: response.status,
+      code: payload.code,
+      traceId: payload.traceId,
+      retryable: payload.retryable
+    });
   }
 
   return (await response.json()) as T;
@@ -234,18 +398,21 @@ const normalizeSyncPullResponse = (payload: unknown): SyncPullResponse => {
   const hasData = hasDataFlag === null ? Boolean(encryptedBlobBase64) : hasDataFlag;
   const version = readVersion(raw, 0);
   const updatedAt = readString(raw, ['updatedAt', 'updated_at']);
+  const traceId = readString(raw, ['traceId', 'trace_id']);
   if (!hasData) {
     return {
       hasData: false,
       version,
-      updatedAt
+      updatedAt,
+      traceId
     };
   }
   return {
     hasData: true,
     version,
     encryptedBlobBase64,
-    updatedAt
+    updatedAt,
+    traceId
   };
 };
 
@@ -262,7 +429,28 @@ const normalizeSyncStatusResponse = (payload: unknown): SyncStatusResponse => {
   return {
     hasData,
     version: readVersion(raw, 0),
-    updatedAt: readString(raw, ['updatedAt', 'updated_at'])
+    updatedAt: readString(raw, ['updatedAt', 'updated_at']),
+    traceId: readString(raw, ['traceId', 'trace_id'])
+  };
+};
+
+const normalizeSyncPushResponse = (payload: unknown): SyncPushResponse => {
+  if (!payload || typeof payload !== 'object') {
+    return {
+      acceptedVersion: 0,
+      updatedAt: ''
+    };
+  }
+  const raw = payload as Record<string, unknown>;
+  const acceptedVersion = parseSyncVersion(
+    raw.acceptedVersion ?? raw.accepted_version ?? raw.version,
+    0
+  );
+  return {
+    acceptedVersion,
+    updatedAt: readString(raw, ['updatedAt', 'updated_at']) ?? '',
+    traceId: readString(raw, ['traceId', 'trace_id']),
+    idempotencyReused: readBoolean(raw, ['idempotencyReused', 'idempotency_reused']) === true
   };
 };
 
@@ -515,55 +703,75 @@ export const pushCloudSyncBlob = async (
 ): Promise<SyncPushResponse> => {
   const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
   const normalizedVersion = parseSyncVersion(request.version, 0);
-  const response = await withTimeout(`${endpoint}/sync/push`, {
-    method: 'POST',
-    headers: authHeaders(session.token),
-    body: JSON.stringify({
-      version: normalizedVersion,
-      encryptedBlobBase64: request.encryptedBlobBase64
-    })
-  });
-  if (response.status === 409) {
-    let message = '检测到版本冲突，请先拉取最新数据后重试。';
-    let latest: SyncPullResponse | null = null;
-    try {
-      const payload = (await response.json()) as { message?: string; latest?: unknown };
-      if (payload.message) {
-        message = payload.message;
+  const idempotencyKey = createIdempotencyKey();
+  return withRetry('sync-push', async () => {
+    const response = await withTimeout(`${endpoint}/sync/push`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(session.token),
+        'X-Idempotency-Key': idempotencyKey
+      },
+      body: JSON.stringify({
+        version: normalizedVersion,
+        encryptedBlobBase64: request.encryptedBlobBase64
+      })
+    });
+    if (response.status === 409) {
+      const parsed = await parseErrorPayload(response, '检测到版本冲突，请先拉取最新数据后重试。');
+      const latest =
+        parsed.latest !== undefined ? normalizeSyncPullResponse(parsed.latest) : null;
+      if (latest && !latest.traceId && parsed.traceId) {
+        latest.traceId = parsed.traceId;
       }
-      if (payload.latest !== undefined) {
-        latest = normalizeSyncPullResponse(payload.latest);
-      }
-    } catch (_error) {
-      // Ignore parse errors and use fallback.
+      throw new CloudSyncConflictError(parsed.message, latest, {
+        code: parsed.code,
+        traceId: parsed.traceId,
+        retryable: parsed.retryable
+      });
     }
-    throw new CloudSyncConflictError(message, latest);
-  }
-  return readJson<SyncPushResponse>(response, '同步上传失败，请稍后重试。');
+    const payload = await readJson<unknown>(response, '同步上传失败，请稍后重试。');
+    const normalized = normalizeSyncPushResponse(payload);
+    if (!normalized.traceId) {
+      normalized.traceId = readTraceIdFromHeaders(response);
+    }
+    return normalized;
+  });
 };
 
 export const getCloudSyncStatus = async (session: CloudSyncSession): Promise<SyncStatusResponse> => {
   const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
-  const response = await withTimeout(`${endpoint}/sync/status`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${session.token}`
+  return withRetry('sync-status', async () => {
+    const response = await withTimeout(`${endpoint}/sync/status`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${session.token}`
+      }
+    });
+    const payload = await readJson<unknown>(response, '获取同步状态失败，请稍后重试。');
+    const normalized = normalizeSyncStatusResponse(payload);
+    if (!normalized.traceId) {
+      normalized.traceId = readTraceIdFromHeaders(response);
     }
+    return normalized;
   });
-  const payload = await readJson<unknown>(response, '获取同步状态失败，请稍后重试。');
-  return normalizeSyncStatusResponse(payload);
 };
 
 export const pullCloudSyncBlob = async (session: CloudSyncSession): Promise<SyncPullResponse> => {
   const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
-  const response = await withTimeout(`${endpoint}/sync/pull`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${session.token}`
+  return withRetry('sync-pull', async () => {
+    const response = await withTimeout(`${endpoint}/sync/pull`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${session.token}`
+      }
+    });
+    const payload = await readJson<unknown>(response, '同步拉取失败，请稍后重试。');
+    const normalized = normalizeSyncPullResponse(payload);
+    if (!normalized.traceId) {
+      normalized.traceId = readTraceIdFromHeaders(response);
     }
+    return normalized;
   });
-  const payload = await readJson<unknown>(response, '同步拉取失败，请稍后重试。');
-  return normalizeSyncPullResponse(payload);
 };
 
 export const listCloudDevices = async (session: CloudSyncSession): Promise<CloudDeviceItem[]> => {

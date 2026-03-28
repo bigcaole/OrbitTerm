@@ -38,6 +38,36 @@ type adminDashboardMetrics struct {
 	CurrentServerUTC string
 }
 
+type adminSyncErrorStat struct {
+	Code  string
+	Count int64
+}
+
+type adminSyncFailureRow struct {
+	TraceID        string
+	Operation      string
+	ErrorCode      string
+	Message        string
+	UserEmail      string
+	HTTPStatus     int
+	RequestVersion string
+	RemoteVersion  string
+	CreatedAt      string
+}
+
+type adminSyncHealth struct {
+	LastHourTotal    int64
+	LastHourFailures int64
+	LastDayTotal     int64
+	LastDayFailures  int64
+	FailureRateHour  string
+	FailureRateDay   string
+	TopErrors        []adminSyncErrorStat
+	RecentFailures   []adminSyncFailureRow
+	LastFailureTrace string
+	LastFailureAt    string
+}
+
 type adminUserRow struct {
 	ID            string
 	Email         string
@@ -79,6 +109,7 @@ type adminPageData struct {
 	ClientDefaultSyncDomain  string
 	ClientSyncDomainLocked   bool
 	ClientHideSyncDomainEdit bool
+	SyncHealth               adminSyncHealth
 }
 
 var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctype html>
@@ -315,6 +346,87 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
       <div class="card"><h3>已撤销设备</h3><div class="metric-number">{{ .Metrics.RevokedDevices }}</div></div>
       <div class="card"><h3>已有云端金库</h3><div class="metric-number">{{ .Metrics.UsersWithVault }}</div></div>
       <div class="card"><h3>最近同步时间</h3><div class="metric-number" style="font-size:16px">{{ .Metrics.LatestSyncAt }}</div></div>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="card">
+      <h2>同步健康面板</h2>
+      <p class="muted">用于排查“无法同步 / 拉取失败 / 多端冲突”：统一显示最近 1 小时与 24 小时同步成功率、错误码热点、可回溯 TraceID。</p>
+      <div class="spacer"></div>
+      <div class="grid metrics">
+        <div>
+          <h3>近 1 小时请求</h3>
+          <div class="metric-number">{{ .SyncHealth.LastHourTotal }}</div>
+          <p class="muted">失败 {{ .SyncHealth.LastHourFailures }}｜失败率 {{ .SyncHealth.FailureRateHour }}</p>
+        </div>
+        <div>
+          <h3>近 24 小时请求</h3>
+          <div class="metric-number">{{ .SyncHealth.LastDayTotal }}</div>
+          <p class="muted">失败 {{ .SyncHealth.LastDayFailures }}｜失败率 {{ .SyncHealth.FailureRateDay }}</p>
+        </div>
+        <div>
+          <h3>最近失败 TraceID</h3>
+          <div class="metric-number" style="font-size:14px">{{ .SyncHealth.LastFailureTrace }}</div>
+          <p class="muted">{{ .SyncHealth.LastFailureAt }}</p>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <h3>最近 24 小时热点错误码</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>错误码</th>
+            <th>次数</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ if .SyncHealth.TopErrors }}
+            {{ range .SyncHealth.TopErrors }}
+            <tr>
+              <td>{{ .Code }}</td>
+              <td>{{ .Count }}</td>
+            </tr>
+            {{ end }}
+          {{ else }}
+            <tr><td colspan="2">暂无失败记录</td></tr>
+          {{ end }}
+        </tbody>
+      </table>
+      <div class="spacer"></div>
+      <h3>最近失败明细（按时间倒序）</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>时间(UTC)</th>
+            <th>TraceID</th>
+            <th>操作</th>
+            <th>错误码</th>
+            <th>HTTP</th>
+            <th>账号</th>
+            <th>版本</th>
+            <th>信息</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ if .SyncHealth.RecentFailures }}
+            {{ range .SyncHealth.RecentFailures }}
+            <tr>
+              <td>{{ .CreatedAt }}</td>
+              <td>{{ .TraceID }}</td>
+              <td>{{ .Operation }}</td>
+              <td>{{ .ErrorCode }}</td>
+              <td>{{ .HTTPStatus }}</td>
+              <td>{{ .UserEmail }}</td>
+              <td>req={{ .RequestVersion }} / remote={{ .RemoteVersion }}</td>
+              <td>{{ .Message }}</td>
+            </tr>
+            {{ end }}
+          {{ else }}
+            <tr><td colspan="8">暂无失败记录</td></tr>
+          {{ end }}
+        </tbody>
+      </table>
     </div>
 
     <div class="spacer"></div>
@@ -645,6 +757,18 @@ func (a *app) handleAdminPage(c *gin.Context) {
 		})
 		return
 	}
+	syncHealth := adminSyncHealth{
+		FailureRateHour:  "0.00%",
+		FailureRateDay:   "0.00%",
+		LastFailureTrace: "-",
+		LastFailureAt:    "-",
+	}
+	loadedSyncHealth, syncHealthErr := a.loadAdminSyncHealth(c.Request.Context())
+	if syncHealthErr != nil {
+		errorMessage = "读取同步健康数据失败，请稍后刷新。"
+	} else {
+		syncHealth = loadedSyncHealth
+	}
 	users, userErr := a.loadAdminUsers(c.Request.Context())
 	if userErr != nil {
 		errorMessage = "读取用户信息失败，请稍后刷新。"
@@ -697,6 +821,7 @@ func (a *app) handleAdminPage(c *gin.Context) {
 		ClientDefaultSyncDomain:  clientDefaultSyncDomain,
 		ClientSyncDomainLocked:   clientSyncDomainLocked,
 		ClientHideSyncDomainEdit: clientHideSyncDomainEdit,
+		SyncHealth:               syncHealth,
 	})
 }
 
@@ -1005,6 +1130,157 @@ func (a *app) loadAdminMetrics(ctx context.Context) (adminDashboardMetrics, erro
 	}
 	metrics.CurrentServerUTC = time.Now().UTC().Format(time.RFC3339)
 	return metrics, nil
+}
+
+func calculateRateText(failed int64, total int64) string {
+	if total <= 0 {
+		return "0.00%"
+	}
+	rate := (float64(failed) / float64(total)) * 100
+	return strconv.FormatFloat(rate, 'f', 2, 64) + "%"
+}
+
+func (a *app) loadAdminSyncHealth(ctx context.Context) (adminSyncHealth, error) {
+	health := adminSyncHealth{
+		FailureRateHour:  "0.00%",
+		FailureRateDay:   "0.00%",
+		LastFailureTrace: "-",
+		LastFailureAt:    "-",
+		TopErrors:        make([]adminSyncErrorStat, 0, 6),
+		RecentFailures:   make([]adminSyncFailureRow, 0, 40),
+	}
+
+	if err := a.db.QueryRowContext(
+		ctx,
+		`SELECT
+			COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 hour') AS hour_total,
+			COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 hour' AND result = 'failed') AS hour_failed,
+			COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hour') AS day_total,
+			COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hour' AND result = 'failed') AS day_failed
+		 FROM sync_event_logs`,
+	).Scan(
+		&health.LastHourTotal,
+		&health.LastHourFailures,
+		&health.LastDayTotal,
+		&health.LastDayFailures,
+	); err != nil {
+		return adminSyncHealth{}, err
+	}
+	health.FailureRateHour = calculateRateText(health.LastHourFailures, health.LastHourTotal)
+	health.FailureRateDay = calculateRateText(health.LastDayFailures, health.LastDayTotal)
+
+	var (
+		lastTraceID sql.NullString
+		lastAt      sql.NullTime
+	)
+	if err := a.db.QueryRowContext(
+		ctx,
+		`SELECT trace_id, created_at
+		 FROM sync_event_logs
+		 WHERE result = 'failed'
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+	).Scan(&lastTraceID, &lastAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return adminSyncHealth{}, err
+	}
+	if lastTraceID.Valid && strings.TrimSpace(lastTraceID.String) != "" {
+		health.LastFailureTrace = strings.TrimSpace(lastTraceID.String)
+	}
+	if lastAt.Valid {
+		health.LastFailureAt = lastAt.Time.UTC().Format(time.RFC3339)
+	}
+
+	topRows, err := a.db.QueryContext(
+		ctx,
+		`SELECT
+			COALESCE(NULLIF(TRIM(error_code), ''), 'UNKNOWN'),
+			COUNT(*) AS cnt
+		 FROM sync_event_logs
+		 WHERE result = 'failed'
+		   AND created_at >= NOW() - INTERVAL '24 hour'
+		 GROUP BY 1
+		 ORDER BY cnt DESC
+		 LIMIT 6`,
+	)
+	if err != nil {
+		return adminSyncHealth{}, err
+	}
+	defer topRows.Close()
+
+	for topRows.Next() {
+		var item adminSyncErrorStat
+		if scanErr := topRows.Scan(&item.Code, &item.Count); scanErr != nil {
+			return adminSyncHealth{}, scanErr
+		}
+		health.TopErrors = append(health.TopErrors, item)
+	}
+	if rowsErr := topRows.Err(); rowsErr != nil {
+		return adminSyncHealth{}, rowsErr
+	}
+
+	failedRows, err := a.db.QueryContext(
+		ctx,
+		`SELECT
+			trace_id,
+			operation,
+			COALESCE(NULLIF(TRIM(error_code), ''), 'UNKNOWN') AS error_code,
+			message,
+			user_email,
+			http_status,
+			request_version,
+			remote_version,
+			created_at
+		 FROM sync_event_logs
+		 WHERE result = 'failed'
+		 ORDER BY created_at DESC
+		 LIMIT 40`,
+	)
+	if err != nil {
+		return adminSyncHealth{}, err
+	}
+	defer failedRows.Close()
+
+	for failedRows.Next() {
+		var (
+			item           adminSyncFailureRow
+			requestVersion sql.NullInt64
+			remoteVersion  sql.NullInt64
+			createdAt      time.Time
+		)
+		if scanErr := failedRows.Scan(
+			&item.TraceID,
+			&item.Operation,
+			&item.ErrorCode,
+			&item.Message,
+			&item.UserEmail,
+			&item.HTTPStatus,
+			&requestVersion,
+			&remoteVersion,
+			&createdAt,
+		); scanErr != nil {
+			return adminSyncHealth{}, scanErr
+		}
+		if requestVersion.Valid {
+			item.RequestVersion = strconv.FormatInt(requestVersion.Int64, 10)
+		} else {
+			item.RequestVersion = "-"
+		}
+		if remoteVersion.Valid {
+			item.RemoteVersion = strconv.FormatInt(remoteVersion.Int64, 10)
+		} else {
+			item.RemoteVersion = "-"
+		}
+		if strings.TrimSpace(item.UserEmail) == "" {
+			item.UserEmail = "-"
+		}
+		item.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+		health.RecentFailures = append(health.RecentFailures, item)
+	}
+	if rowsErr := failedRows.Err(); rowsErr != nil {
+		return adminSyncHealth{}, rowsErr
+	}
+
+	return health, nil
 }
 
 func (a *app) loadAdminUsers(ctx context.Context) ([]adminUserRow, error) {

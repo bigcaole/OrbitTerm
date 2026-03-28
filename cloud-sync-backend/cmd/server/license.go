@@ -364,23 +364,17 @@ func (a *app) requireActiveSyncLicenseMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := strings.TrimSpace(c.GetString("userID"))
 		if userID == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"message": "登录状态已失效，请重新登录。",
-			})
+			a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusUnauthorized, syncErrorCodeAuthRequired, "登录状态已失效，请重新登录。", false, syncEventVersions{})
 			return
 		}
 
 		status, err := a.resolveLicenseStatus(c.Request.Context(), userID)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"message": "授权状态校验失败，请稍后重试。",
-			})
+			a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusInternalServerError, syncErrorCodeLicenseCheckFailed, "授权状态校验失败，请稍后重试。", true, syncEventVersions{})
 			return
 		}
 		if !status.Active {
-			c.AbortWithStatusJSON(http.StatusPaymentRequired, gin.H{
-				"message": "当前账号未激活同步服务，请在客户端输入激活码后再使用云同步。",
-			})
+			a.writeSyncError(c, syncOperationFromPath(c.Request.URL.Path), http.StatusPaymentRequired, syncErrorCodeLicenseInactive, "当前账号未激活同步服务，请在客户端输入激活码后再使用云同步。", false, syncEventVersions{})
 			return
 		}
 

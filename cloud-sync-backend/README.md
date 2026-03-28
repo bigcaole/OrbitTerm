@@ -20,6 +20,15 @@
 - Push 时服务端忽略客户端时间戳，统一使用服务器 `UTC` 时间写入 `updated_at`。
 - Push 更新采用原子版本检查：仅当云端 `version == client_version` 时才允许 `version = version + 1`。
 - 发生冲突返回 `409`，并携带 `latest`（最新云端 Blob + 版本），客户端应先拉取并合并。
+- Push 支持幂等键头 `X-Idempotency-Key`：同一请求重试不会重复写入，避免弱网重放导致误判冲突。
+
+### 可观测性与排障
+- `/sync/*` 响应统一返回 `traceId` 与 `code`（失败分层码），便于客户端日志与后端事件对齐。
+- 服务端会记录 `sync_event_logs`（操作、错误码、版本、TraceID、HTTP 状态）。
+- 管理员控制台 `/admin` 内置“同步健康面板”，可查看：
+  - 最近 1 小时 / 24 小时失败率
+  - 错误码热点统计
+  - 最近失败明细与 TraceID
 
 ## 安全策略
 - 服务默认强制 HTTPS（会校验 `TLS` / `X-Forwarded-Proto=https` / `X-Forwarded-Ssl=on`）。
