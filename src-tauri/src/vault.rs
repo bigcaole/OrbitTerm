@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::json;
@@ -349,13 +350,22 @@ async fn import_sync_blob_inner(
         password.to_string()
     };
 
-    let encrypted_bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded_blob)
-        .map_err(|_| VaultError::InvalidSyncBlob)?;
-    let encrypted = serde_json::from_slice::<EncryptedVault>(&encrypted_bytes)
-        .map_err(|_| VaultError::InvalidSyncBlob)?;
+    let decoded_bytes = decode_sync_blob_base64(encoded_blob)?;
+    let (encrypted, decrypted, persisted_bytes) =
+        if let Ok(encrypted) = parse_encrypted_sync_blob(&decoded_bytes) {
+            let decrypted = decrypt_cloud_vault(master_password.as_str(), &encrypted)?;
+            let persisted_bytes =
+                serde_json::to_vec(&encrypted).map_err(|_| VaultError::InvalidSyncBlob)?;
+            (encrypted, decrypted, persisted_bytes)
+        } else {
+            let decrypted = parse_plain_sync_vault(&decoded_bytes)?;
+            let encrypted = encrypt_cloud_vault(master_password.as_str(), &decrypted)
+                .map_err(|_| VaultError::InvalidSyncBlob)?;
+            let persisted_bytes =
+                serde_json::to_vec(&encrypted).map_err(|_| VaultError::InvalidSyncBlob)?;
+            (encrypted, decrypted, persisted_bytes)
+        };
 
-    let decrypted = decrypt_cloud_vault(master_password.as_str(), &encrypted)?;
     let derived_key = derive_session_key(master_password.as_str(), &encrypted)?;
     let (hosts, identities, snippets) = parse_vault_data(&decrypted)?;
 
@@ -366,7 +376,7 @@ async fn import_sync_blob_inner(
     salt.copy_from_slice(&encrypted.salt);
 
     let vault_path = resolve_vault_path(app, VAULT_FILENAME).await?;
-    atomic_write(&vault_path, &encrypted_bytes).await?;
+    atomic_write(&vault_path, &persisted_bytes).await?;
 
     {
         let mut key_guard = state.derived_key.write().await;
@@ -392,6 +402,96 @@ async fn import_sync_blob_inner(
         version: decrypted.version,
         updated_at: decrypted.updated_at,
     })
+}
+
+fn decode_sync_blob_base64(encoded_blob: &str) -> Result<Vec<u8>, VaultError> {
+    let normalized: String = encoded_blob
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    if normalized.is_empty() {
+        return Err(VaultError::InvalidSyncBlob);
+    }
+
+    let decoders = [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD];
+    for decoder in decoders {
+        if let Ok(bytes) = decoder.decode(normalized.as_str()) {
+            if !bytes.is_empty() {
+                return Ok(bytes);
+            }
+        }
+    }
+    Err(VaultError::InvalidSyncBlob)
+}
+
+fn parse_encrypted_sync_blob(bytes: &[u8]) -> Result<EncryptedVault, VaultError> {
+    if let Ok(parsed) = serde_json::from_slice::<EncryptedVault>(bytes) {
+        return Ok(parsed);
+    }
+    if let Ok(compat) = serde_json::from_slice::<CompatEncryptedVault>(bytes) {
+        return Ok(EncryptedVault {
+            header: compat.header,
+            version: compat.version,
+            updated_at: compat.updated_at,
+            kdf: crate::e2ee::KdfParams {
+                algorithm: compat.kdf.algorithm,
+                memory_kib: compat.kdf.memory_kib,
+                time_cost: compat.kdf.time_cost,
+                lanes: compat.kdf.lanes,
+            },
+            salt: compat.salt,
+            nonce: compat.nonce,
+            password_proof: compat.password_proof,
+            payload_hmac: compat.payload_hmac,
+            ciphertext: compat.ciphertext,
+        });
+    }
+
+    if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(nested) = extract_nested_sync_blob_base64(&raw) {
+            let nested_bytes = decode_sync_blob_base64(nested.as_str())?;
+            if nested_bytes != bytes {
+                return parse_encrypted_sync_blob(&nested_bytes);
+            }
+        }
+    }
+
+    Err(VaultError::InvalidSyncBlob)
+}
+
+fn parse_plain_sync_vault(bytes: &[u8]) -> Result<CloudVault, VaultError> {
+    if let Ok(vault) = serde_json::from_slice::<CloudVault>(bytes) {
+        return Ok(vault);
+    }
+    if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(value) = raw.get("vault").cloned() {
+            if let Ok(vault) = serde_json::from_value::<CloudVault>(value) {
+                return Ok(vault);
+            }
+        }
+    }
+    Err(VaultError::InvalidSyncBlob)
+}
+
+fn extract_nested_sync_blob_base64(raw: &serde_json::Value) -> Option<String> {
+    let obj = raw.as_object()?;
+    let keys = [
+        "encryptedBlobBase64",
+        "encrypted_blob_base64",
+        "encryptedBlob",
+        "encrypted_blob",
+        "blob",
+        "data",
+    ];
+    for key in keys {
+        if let Some(serde_json::Value::String(value)) = obj.get(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 async fn load_or_initialize_vault(
@@ -499,6 +599,32 @@ struct LegacyHostConfig {
     basic_info: LegacyHostBasicInfo,
     auth_config: HostAuthConfig,
     advanced_options: HostAdvancedOptions,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CompatEncryptedVault {
+    header: String,
+    version: u64,
+    #[serde(alias = "updatedAt")]
+    updated_at: i64,
+    kdf: CompatKdfParams,
+    salt: Vec<u8>,
+    nonce: Vec<u8>,
+    #[serde(alias = "passwordProof")]
+    password_proof: Vec<u8>,
+    #[serde(alias = "payloadHmac")]
+    payload_hmac: Vec<u8>,
+    ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CompatKdfParams {
+    algorithm: String,
+    #[serde(alias = "memoryKib")]
+    memory_kib: u32,
+    #[serde(alias = "timeCost")]
+    time_cost: u32,
+    lanes: u32,
 }
 
 fn parse_vault_data(
@@ -686,9 +812,15 @@ fn now_unix_ts() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
     use serde_json::json;
 
-    use super::{parse_vault_data, CloudVault};
+    use crate::e2ee::encrypt_cloud_vault;
+
+    use super::{
+        parse_encrypted_sync_blob, parse_plain_sync_vault, parse_vault_data, CloudVault,
+        STANDARD_NO_PAD,
+    };
 
     #[test]
     fn parse_vault_data_should_recover_missing_identity_links() {
@@ -771,5 +903,45 @@ mod tests {
         assert!(!hosts[0].identity_id.is_empty());
         assert_eq!(snippets.len(), 1);
         assert!(!identities.is_empty());
+    }
+
+    #[test]
+    fn parse_encrypted_sync_blob_should_accept_wrapped_blob() {
+        let vault = CloudVault {
+            version: 3,
+            updated_at: 1_746_000_123,
+            data: json!({
+                "hosts": [],
+                "identities": [],
+                "snippets": []
+            }),
+        };
+        let encrypted = encrypt_cloud_vault("test-password", &vault).expect("encrypt should work");
+        let encrypted_bytes = serde_json::to_vec(&encrypted).expect("json should work");
+        let wrapped = json!({
+            "encrypted_blob_base64": STANDARD_NO_PAD.encode(encrypted_bytes)
+        });
+        let wrapped_bytes = serde_json::to_vec(&wrapped).expect("json should work");
+
+        let parsed = parse_encrypted_sync_blob(&wrapped_bytes).expect("wrapper should parse");
+        assert_eq!(parsed.version, encrypted.version);
+        assert_eq!(parsed.updated_at, encrypted.updated_at);
+    }
+
+    #[test]
+    fn parse_plain_sync_vault_should_accept_raw_vault_json() {
+        let vault = CloudVault {
+            version: 8,
+            updated_at: 1_746_000_456,
+            data: json!({
+                "hosts": [],
+                "identities": [],
+                "snippets": []
+            }),
+        };
+        let bytes = serde_json::to_vec(&vault).expect("json should work");
+        let parsed = parse_plain_sync_vault(&bytes).expect("plain vault should parse");
+        assert_eq!(parsed.version, vault.version);
+        assert_eq!(parsed.updated_at, vault.updated_at);
     }
 }

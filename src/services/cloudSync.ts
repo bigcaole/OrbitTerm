@@ -153,16 +153,65 @@ const parseSyncVersion = (value: unknown, fallback = 0): number => {
   return fallback;
 };
 
+const readString = (raw: Record<string, unknown>, keys: string[]): string | undefined => {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return undefined;
+};
+
+const readBoolean = (raw: Record<string, unknown>, keys: string[]): boolean | null => {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') {
+        return true;
+      }
+      if (normalized === 'false') {
+        return false;
+      }
+    }
+  }
+  return null;
+};
+
+const readVersion = (raw: Record<string, unknown>, fallback = 0): number => {
+  const candidates = [raw.version, raw.syncVersion, raw.sync_version];
+  for (const candidate of candidates) {
+    const parsed = parseSyncVersion(candidate, -1);
+    if (parsed >= 0) {
+      return parsed;
+    }
+  }
+  return fallback;
+};
+
 const normalizeSyncPullResponse = (payload: unknown): SyncPullResponse => {
   if (!payload || typeof payload !== 'object') {
     return { hasData: false };
   }
   const raw = payload as Record<string, unknown>;
-  const hasData = raw.hasData === true;
-  const version = parseSyncVersion(raw.version, 0);
-  const encryptedBlobBase64 =
-    typeof raw.encryptedBlobBase64 === 'string' ? raw.encryptedBlobBase64 : undefined;
-  const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined;
+  const encryptedBlobBase64 = readString(raw, [
+    'encryptedBlobBase64',
+    'encrypted_blob_base64',
+    'encryptedBlob',
+    'encrypted_blob',
+    'blob'
+  ]);
+  const hasDataFlag = readBoolean(raw, ['hasData', 'has_data']);
+  const hasData = hasDataFlag === null ? Boolean(encryptedBlobBase64) : hasDataFlag;
+  const version = readVersion(raw, 0);
+  const updatedAt = readString(raw, ['updatedAt', 'updated_at']);
   if (!hasData) {
     return {
       hasData: false,
@@ -186,10 +235,12 @@ const normalizeSyncStatusResponse = (payload: unknown): SyncStatusResponse => {
     };
   }
   const raw = payload as Record<string, unknown>;
+  const hasDataFlag = readBoolean(raw, ['hasData', 'has_data']);
+  const hasData = hasDataFlag === null ? readVersion(raw, 0) > 0 : hasDataFlag;
   return {
-    hasData: raw.hasData === true,
-    version: parseSyncVersion(raw.version, 0),
-    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined
+    hasData,
+    version: readVersion(raw, 0),
+    updatedAt: readString(raw, ['updatedAt', 'updated_at'])
   };
 };
 
