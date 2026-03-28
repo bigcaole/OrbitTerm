@@ -139,6 +139,12 @@ services:
       MAX_REQUEST_BODY_BYTES: "4194304"
       AUTH_RATE_LIMIT_PER_MIN: "30"
       SYNC_RATE_LIMIT_PER_MIN: "120"
+      ADMIN_WEB_ENABLED: "true"
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: "请替换为管理员强密码"
+      ADMIN_2FA_ENABLED: "false"
+      ADMIN_2FA_CODE: "123456"
+      ADMIN_SESSION_HOURS: "12"
     ports:
       - "127.0.0.1:8080:8080"
 
@@ -179,6 +185,12 @@ docker compose logs -f api
 - `MAX_REQUEST_BODY_BYTES`：请求体最大字节数，默认 `4194304`（4MB）。
 - `AUTH_RATE_LIMIT_PER_MIN`：登录/注册限流（每分钟每 IP+路由）。
 - `SYNC_RATE_LIMIT_PER_MIN`：同步接口限流（每分钟每 IP+路由）。
+- `ADMIN_WEB_ENABLED`：是否启用管理员 Web（`/admin`）。
+- `ADMIN_USERNAME`：管理员登录账号。
+- `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH`：管理员密码（二选一，生产建议用哈希）。
+- `ADMIN_2FA_ENABLED`：管理员登录是否强制二次验证码。
+- `ADMIN_2FA_CODE`：管理员二次验证码（开启 2FA 时必填）。
+- `ADMIN_SESSION_HOURS`：管理员会话有效时长（小时）。
 
 ---
 
@@ -221,36 +233,55 @@ curl -s https://sync.yourdomain.com/healthz
 
 ---
 
-## 8. 常见问题与排查
+## 8. 项目管理员 Web（/admin）
 
-### 8.1 提示“同步服务仅接受 HTTPS 请求”
+启用 `ADMIN_WEB_ENABLED=true` 后，可访问：
+
+`https://sync.yourdomain.com/admin`
+
+管理员 Web 支持：
+- 查看全局状态（用户数、在线设备、同步概览）
+- 按用户一键撤销全部设备登录
+- 单设备会话撤销
+- 在线调整关键运行参数（CORS、请求体上限、限流等），并持久化到数据库 `admin_settings`
+
+> 注意：  
+> 1. 管理端必须走 HTTPS。  
+> 2. 建议启用 `ADMIN_2FA_ENABLED=true`。  
+> 3. `ALLOW_INSECURE_HTTP=true` 仅用于本地调试，生产不要开启。  
+
+---
+
+## 9. 常见问题与排查
+
+### 9.1 提示“同步服务仅接受 HTTPS 请求”
 
 原因：反向代理没有透传 HTTPS 头。  
 处理：确认至少有以下一个头被传递：
 - `X-Forwarded-Proto: https`
 - `X-Forwarded-Ssl: on`
 
-### 8.2 返回 429（请求过于频繁）
+### 9.2 返回 429（请求过于频繁）
 
 原因：触发了登录/同步限流。  
 处理：稍后重试，或在服务端适当调大 `AUTH_RATE_LIMIT_PER_MIN` / `SYNC_RATE_LIMIT_PER_MIN`。
 
-### 8.3 返回 413（请求体过大）
+### 9.3 返回 413（请求体过大）
 
 原因：同步包超过 `MAX_REQUEST_BODY_BYTES`。  
 处理：增大该值，或减少单次写入体积。
 
-### 8.4 CORS 报错
+### 9.4 CORS 报错
 
 原因：`CORS_ALLOW_ORIGINS` 未包含当前来源。  
 处理：按实际前端来源补齐，多个用逗号分隔。
 
-### 8.5 SQL 初始化没生效
+### 9.5 SQL 初始化没生效
 
 `./sql/init.sql` 只会在 PostgreSQL 数据卷首次初始化时执行。  
 如果已有旧卷，需要手动执行 SQL 或重建数据卷。
 
-### 8.6 登录成功但拉取失败（Windows 与 macOS 之间不更新）
+### 9.6 登录成功但拉取失败（Windows 与 macOS 之间不更新）
 
 常见原因：
 - 设备主密码不一致，导致云端加密包无法解密。
@@ -262,7 +293,7 @@ curl -s https://sync.yourdomain.com/healthz
 
 ---
 
-## 9. 升级流程
+## 10. 升级流程
 
 ```bash
 cd OrbitTerm
@@ -274,7 +305,7 @@ docker compose ps
 
 ---
 
-## 10. 安全与运维建议
+## 11. 安全与运维建议
 
 1. 不要把 `8080` 暴露到公网，走 `127.0.0.1:8080 + HTTPS 反代`。
 2. 所有默认密码和 `JWT_SECRET` 必须替换。

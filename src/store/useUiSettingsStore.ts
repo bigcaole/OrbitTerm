@@ -16,6 +16,7 @@ interface UiSettingsState {
   autoLockEnabled: boolean;
   autoLockMinutes: number;
   closeWindowAction: CloseWindowAction;
+  snippetsPanelCollapsed: boolean;
   hasCompletedOnboarding: boolean;
   hostUsageStats: Record<string, { count: number; lastConnectedAt: number }>;
   setTerminalFontSize: (value: number) => void;
@@ -29,6 +30,7 @@ interface UiSettingsState {
   setAutoLockEnabled: (value: boolean) => void;
   setAutoLockMinutes: (value: number) => void;
   setCloseWindowAction: (value: CloseWindowAction) => void;
+  setSnippetsPanelCollapsed: (value: boolean) => void;
   setHasCompletedOnboarding: (value: boolean) => void;
   recordHostConnection: (hostId: string) => void;
 }
@@ -113,6 +115,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       autoLockEnabled: true,
       autoLockMinutes: 5,
       closeWindowAction: 'ask',
+      snippetsPanelCollapsed: true,
       hasCompletedOnboarding: false,
       hostUsageStats: {},
       setTerminalFontSize: (value) => {
@@ -151,6 +154,9 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       },
       setCloseWindowAction: (value) => {
         set({ closeWindowAction: normalizeCloseWindowAction(value, 'ask') });
+      },
+      setSnippetsPanelCollapsed: (value) => {
+        set({ snippetsPanelCollapsed: value });
       },
       setHasCompletedOnboarding: (value) => {
         set({ hasCompletedOnboarding: value });
@@ -228,6 +234,10 @@ export const useUiSettingsStore = create<UiSettingsState>()(
             persisted.closeWindowAction,
             currentState.closeWindowAction
           ),
+          snippetsPanelCollapsed:
+            typeof persisted.snippetsPanelCollapsed === 'boolean'
+              ? persisted.snippetsPanelCollapsed
+              : currentState.snippetsPanelCollapsed,
           hasCompletedOnboarding:
             typeof persisted.hasCompletedOnboarding === 'boolean'
               ? persisted.hasCompletedOnboarding
@@ -247,6 +257,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
         autoLockEnabled: state.autoLockEnabled,
         autoLockMinutes: state.autoLockMinutes,
         closeWindowAction: state.closeWindowAction,
+        snippetsPanelCollapsed: state.snippetsPanelCollapsed,
         hasCompletedOnboarding: state.hasCompletedOnboarding,
         hostUsageStats: state.hostUsageStats
       })

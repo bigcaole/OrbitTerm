@@ -14,6 +14,7 @@
 - `POST /sync/push`：上传加密 Blob 与客户端看到的版本号（需要 JWT）
 - `GET /sync/pull`：拉取该账号最新加密 Blob（需要 JWT）
 - `GET /healthz`：健康检查
+- `GET /admin`：项目管理员 Web 控制台（可选启用）
 
 ### 版本一致性机制
 - Push 时服务端忽略客户端时间戳，统一使用服务器 `UTC` 时间写入 `updated_at`。
@@ -38,6 +39,13 @@
 - `MAX_REQUEST_BODY_BYTES`：单请求最大体积（字节），默认 `4194304`（4MB）
 - `AUTH_RATE_LIMIT_PER_MIN`：登录/注册每分钟每 IP+路由限流次数，默认 `30`
 - `SYNC_RATE_LIMIT_PER_MIN`：同步接口每分钟每 IP+路由限流次数，默认 `120`
+- `ADMIN_WEB_ENABLED`：是否启用管理员 Web，默认 `false`
+- `ADMIN_USERNAME`：管理员账号（`ADMIN_WEB_ENABLED=true` 时必填）
+- `ADMIN_PASSWORD`：管理员明文密码（便捷方式，启动时会转为哈希，仅与 `ADMIN_PASSWORD_HASH` 二选一）
+- `ADMIN_PASSWORD_HASH`：管理员密码 bcrypt 哈希（更安全，推荐）
+- `ADMIN_2FA_ENABLED`：是否启用管理员 2FA 二次验证，默认 `false`
+- `ADMIN_2FA_CODE`：管理员 2FA 验证码（当 `ADMIN_2FA_ENABLED=true` 时必填）
+- `ADMIN_SESSION_HOURS`：管理员登录会话时长（小时），默认 `12`
 
 ## 一键容器部署（推荐）
 项目已提供：
@@ -82,6 +90,15 @@ api:
     JWT_EXPIRE_HOURS: "720"
     ALLOW_INSECURE_HTTP: "false"
     CORS_ALLOW_ORIGINS: "https://app.orbitterm.example"
+    MAX_REQUEST_BODY_BYTES: "4194304"
+    AUTH_RATE_LIMIT_PER_MIN: "30"
+    SYNC_RATE_LIMIT_PER_MIN: "120"
+    ADMIN_WEB_ENABLED: "true"
+    ADMIN_USERNAME: "admin"
+    ADMIN_PASSWORD: "replace_with_a_strong_password"
+    ADMIN_2FA_ENABLED: "false"
+    ADMIN_2FA_CODE: "123456"
+    ADMIN_SESSION_HOURS: "12"
   ports:
     - "8080:8080"
 ```
@@ -99,6 +116,7 @@ api:
    - `X-Forwarded-Ssl: on`
 7. 访问 `https://你的域名/healthz`，返回 `status=ok` 即部署成功。
 8. 在 OrbitTerm 客户端填入该 HTTPS 地址，进行注册/登录后即可自动同步。
+9. 如启用管理员 Web，可通过 `https://你的域名/admin` 登录查看全局状态、在线设备并在线调整关键参数（会写入 `admin_settings` 表）。
 
 ## SQL 初始化
 `sql/init.sql` 已包含：

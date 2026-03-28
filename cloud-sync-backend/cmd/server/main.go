@@ -33,13 +33,30 @@ type config struct {
 	MaxRequestBodyBytes int64
 	AuthRateLimitPerMin int
 	SyncRateLimitPerMin int
+	AdminWebEnabled     bool
+	AdminUsername       string
+	AdminPasswordHash   string
+	Admin2FAEnabled     bool
+	Admin2FACode        string
+	AdminSessionHours   int
+}
+
+type runtimeSettings struct {
+	AllowInsecureHTTP   bool
+	CORSAllowOrigins    string
+	MaxRequestBodyBytes int64
+	AuthRateLimitPerMin int
+	SyncRateLimitPerMin int
 }
 
 type app struct {
-	cfg         config
-	db          *sql.DB
-	authLimiter *rateLimiter
-	syncLimiter *rateLimiter
+	cfg             config
+	db              *sql.DB
+	authLimiter     *rateLimiter
+	syncLimiter     *rateLimiter
+	adminLimiter    *rateLimiter
+	runtimeMu       sync.RWMutex
+	runtimeSettings runtimeSettings
 }
 
 type rateLimiter struct {
@@ -159,16 +176,28 @@ func main() {
 	}
 
 	a := &app{
-		cfg:         cfg,
-		db:          db,
-		authLimiter: newRateLimiter(cfg.AuthRateLimitPerMin, time.Minute),
-		syncLimiter: newRateLimiter(cfg.SyncRateLimitPerMin, time.Minute),
+		cfg:          cfg,
+		db:           db,
+		authLimiter:  newRateLimiter(cfg.AuthRateLimitPerMin, time.Minute),
+		syncLimiter:  newRateLimiter(cfg.SyncRateLimitPerMin, time.Minute),
+		adminLimiter: newRateLimiter(20, time.Minute),
+		runtimeSettings: runtimeSettings{
+			AllowInsecureHTTP:   cfg.AllowInsecureHTTP,
+			CORSAllowOrigins:    cfg.CORSAllowOrigins,
+			MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+			AuthRateLimitPerMin: cfg.AuthRateLimitPerMin,
+			SyncRateLimitPerMin: cfg.SyncRateLimitPerMin,
+		},
 	}
+	if err := a.loadRuntimeSettings(ctx); err != nil {
+		log.Fatalf("运行参数加载失败: %v", err)
+	}
+
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(a.httpsOnlyMiddleware())
 	router.Use(a.corsMiddleware())
-	router.Use(requestBodyLimitMiddleware(cfg.MaxRequestBodyBytes))
+	router.Use(a.requestBodyLimitMiddleware())
 
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -199,6 +228,8 @@ func main() {
 	accountGroup.Use(a.jwtAuthMiddleware())
 	accountGroup.GET("/devices", a.handleDevices)
 	accountGroup.POST("/logout/device", a.handleLogoutDevice)
+
+	a.registerAdminRoutes(router)
 
 	addr := ":" + cfg.Port
 	log.Printf("OrbitTerm 私有云同步服务已启动: %s", addr)
@@ -244,6 +275,11 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			revoked_at TIMESTAMPTZ
 		)`,
+		`CREATE TABLE IF NOT EXISTS admin_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_updated_at ON vault_blobs(updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_version ON vault_blobs(version)`,
 		`CREATE INDEX IF NOT EXISTS idx_snippets_user_updated_at ON snippets(user_id, updated_at DESC)`,
@@ -270,6 +306,12 @@ func loadConfig() (config, error) {
 		MaxRequestBodyBytes: readEnvInt64("MAX_REQUEST_BODY_BYTES", 4*1024*1024),
 		AuthRateLimitPerMin: readEnvInt("AUTH_RATE_LIMIT_PER_MIN", 30),
 		SyncRateLimitPerMin: readEnvInt("SYNC_RATE_LIMIT_PER_MIN", 120),
+		AdminWebEnabled:     readEnvBool("ADMIN_WEB_ENABLED", false),
+		AdminUsername:       strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
+		AdminPasswordHash:   strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
+		Admin2FAEnabled:     readEnvBool("ADMIN_2FA_ENABLED", false),
+		Admin2FACode:        strings.TrimSpace(os.Getenv("ADMIN_2FA_CODE")),
+		AdminSessionHours:   readEnvInt("ADMIN_SESSION_HOURS", 12),
 	}
 
 	expireHours := readEnv("JWT_EXPIRE_HOURS", "720")
@@ -296,6 +338,28 @@ func loadConfig() (config, error) {
 	}
 	if cfg.AuthRateLimitPerMin <= 0 || cfg.SyncRateLimitPerMin <= 0 {
 		return config{}, errors.New("AUTH_RATE_LIMIT_PER_MIN 与 SYNC_RATE_LIMIT_PER_MIN 必须为正整数")
+	}
+	if cfg.AdminSessionHours <= 0 || cfg.AdminSessionHours > 168 {
+		return config{}, errors.New("ADMIN_SESSION_HOURS 必须在 1 到 168 小时之间")
+	}
+	if cfg.AdminWebEnabled {
+		if cfg.AdminUsername == "" {
+			return config{}, errors.New("启用管理员 Web 时必须设置 ADMIN_USERNAME")
+		}
+		if cfg.AdminPasswordHash == "" {
+			adminPassword := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+			if adminPassword == "" {
+				return config{}, errors.New("启用管理员 Web 时必须设置 ADMIN_PASSWORD 或 ADMIN_PASSWORD_HASH")
+			}
+			hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
+			if hashErr != nil {
+				return config{}, errors.New("ADMIN_PASSWORD 处理失败")
+			}
+			cfg.AdminPasswordHash = string(hashBytes)
+		}
+		if cfg.Admin2FAEnabled && cfg.Admin2FACode == "" {
+			return config{}, errors.New("ADMIN_2FA_ENABLED=true 时必须提供 ADMIN_2FA_CODE")
+		}
 	}
 
 	return cfg, nil
@@ -331,6 +395,101 @@ func readEnvInt64(key string, fallback int64) int64 {
 		return fallback
 	}
 	return parsed
+}
+
+func readEnvBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func (a *app) getRuntimeSettings() runtimeSettings {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.runtimeSettings
+}
+
+func (a *app) applyRuntimeSettings(next runtimeSettings) {
+	if next.MaxRequestBodyBytes <= 0 {
+		next.MaxRequestBodyBytes = 4 * 1024 * 1024
+	}
+	if next.AuthRateLimitPerMin <= 0 {
+		next.AuthRateLimitPerMin = 30
+	}
+	if next.SyncRateLimitPerMin <= 0 {
+		next.SyncRateLimitPerMin = 120
+	}
+
+	a.runtimeMu.Lock()
+	a.runtimeSettings = next
+	a.runtimeMu.Unlock()
+
+	a.authLimiter.setLimit(next.AuthRateLimitPerMin)
+	a.syncLimiter.setLimit(next.SyncRateLimitPerMin)
+}
+
+func parseBoolString(raw string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func (a *app) loadRuntimeSettings(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT key, value FROM admin_settings`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	next := a.getRuntimeSettings()
+	for rows.Next() {
+		var key string
+		var value string
+		if scanErr := rows.Scan(&key, &value); scanErr != nil {
+			return scanErr
+		}
+		switch strings.TrimSpace(key) {
+		case "allow_insecure_http":
+			next.AllowInsecureHTTP = parseBoolString(value, next.AllowInsecureHTTP)
+		case "cors_allow_origins":
+			trimmed := strings.TrimSpace(value)
+			if trimmed != "" {
+				next.CORSAllowOrigins = trimmed
+			}
+		case "max_request_body_bytes":
+			if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(value), 10, 64); parseErr == nil && parsed > 0 {
+				next.MaxRequestBodyBytes = parsed
+			}
+		case "auth_rate_limit_per_min":
+			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && parsed > 0 {
+				next.AuthRateLimitPerMin = parsed
+			}
+		case "sync_rate_limit_per_min":
+			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && parsed > 0 {
+				next.SyncRateLimitPerMin = parsed
+			}
+		}
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return rowsErr
+	}
+
+	a.applyRuntimeSettings(next)
+	return nil
 }
 
 func newRateLimiter(limitPerWindow int, window time.Duration) *rateLimiter {
@@ -372,6 +531,19 @@ func (r *rateLimiter) allow(key string) bool {
 	return true
 }
 
+func (r *rateLimiter) setLimit(limit int) {
+	if r == nil {
+		return
+	}
+	nextLimit := limit
+	if nextLimit <= 0 {
+		nextLimit = 1
+	}
+	r.mu.Lock()
+	r.limitPerWindow = nextLimit
+	r.mu.Unlock()
+}
+
 func (a *app) rateLimitMiddleware(limiter *rateLimiter, message string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		route := c.FullPath()
@@ -389,8 +561,9 @@ func (a *app) rateLimitMiddleware(limiter *rateLimiter, message string) gin.Hand
 	}
 }
 
-func requestBodyLimitMiddleware(limit int64) gin.HandlerFunc {
+func (a *app) requestBodyLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		limit := a.getRuntimeSettings().MaxRequestBodyBytes
 		if c.Request.ContentLength > limit {
 			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
 				"message": "请求体过大，请精简后重试。",
@@ -411,7 +584,7 @@ func isRequestBodyTooLarge(err error) bool {
 
 func (a *app) httpsOnlyMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if a.cfg.AllowInsecureHTTP {
+		if a.getRuntimeSettings().AllowInsecureHTTP {
 			c.Next()
 			return
 		}
@@ -431,8 +604,8 @@ func (a *app) httpsOnlyMiddleware() gin.HandlerFunc {
 }
 
 func (a *app) corsMiddleware() gin.HandlerFunc {
-	allowOrigins := strings.TrimSpace(a.cfg.CORSAllowOrigins)
 	return func(c *gin.Context) {
+		allowOrigins := strings.TrimSpace(a.getRuntimeSettings().CORSAllowOrigins)
 		origin := strings.TrimSpace(c.GetHeader("Origin"))
 		if origin != "" {
 			if allowOrigins == "*" {
