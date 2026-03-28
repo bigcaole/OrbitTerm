@@ -503,6 +503,7 @@ func (a *app) registerAdminRoutes(router *gin.Engine) {
 	)
 	adminGroup.GET("/backup", a.handleAdminBackupPage)
 	adminGroup.GET("/backup/export", a.requireAdminRole("superadmin", "admin"), a.handleAdminBackupExport)
+	adminGroup.GET("/backup/export/sql", a.requireAdminRole("superadmin"), a.handleAdminBackupExportSQL)
 	adminGroup.POST("/backup/import", a.requireAdminRole("superadmin"), a.handleAdminBackupImport)
 }
 

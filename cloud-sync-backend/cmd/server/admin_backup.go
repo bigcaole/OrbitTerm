@@ -8,6 +8,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,12 +19,47 @@ import (
 type adminBackupPayload struct {
 	SchemaVersion int                          `json:"schemaVersion"`
 	ExportedAt    string                       `json:"exportedAt"`
+	Meta          adminBackupMeta              `json:"meta"`
 	AdminSettings map[string]string            `json:"adminSettings"`
 	Users         []adminBackupUser            `json:"users"`
 	VaultBlobs    []adminBackupVaultBlob       `json:"vaultBlobs"`
+	Snippets      []adminBackupSnippet         `json:"snippets"`
 	UserDevices   []adminBackupUserDevice      `json:"userDevices"`
 	LicenseCodes  []adminBackupLicenseCode     `json:"licenseCodes"`
 	Entitlements  []adminBackupUserEntitlement `json:"entitlements"`
+	AuditLogs     []adminBackupAuditLog        `json:"auditLogs,omitempty"`
+}
+
+type adminBackupMeta struct {
+	BackupKind       string         `json:"backupKind"`
+	ExportedBy       string         `json:"exportedBy"`
+	IncludeAuditLogs bool           `json:"includeAuditLogs"`
+	AuditLogLimit    int            `json:"auditLogLimit,omitempty"`
+	Coverage         []string       `json:"coverage"`
+	RowCounts        map[string]int `json:"rowCounts"`
+}
+
+type adminBackupSnippet struct {
+	ID        string   `json:"id"`
+	UserID    string   `json:"userId"`
+	Title     string   `json:"title"`
+	Command   string   `json:"command"`
+	Tags      []string `json:"tags"`
+	CreatedAt string   `json:"createdAt"`
+	UpdatedAt string   `json:"updatedAt"`
+}
+
+type adminBackupAuditLog struct {
+	ID            int64  `json:"id"`
+	ActorUsername string `json:"actorUsername"`
+	ActorRole     string `json:"actorRole"`
+	Action        string `json:"action"`
+	Target        string `json:"target"`
+	Result        string `json:"result"`
+	Detail        string `json:"detail"`
+	IP            string `json:"ip"`
+	UserAgent     string `json:"userAgent"`
+	CreatedAt     string `json:"createdAt"`
 }
 
 type adminBackupUser struct {
@@ -140,6 +177,7 @@ const adminBackupPageTemplate = `<!doctype html>
     .top a:hover { background:#eaf4ef; color:#234e45; }
     .card { border:1px solid var(--line); background:var(--panel); border-radius:16px; padding:16px; box-shadow: 0 8px 24px rgba(48,79,66,.08); }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .stack { display:grid; gap:10px; }
     h1,h2 { margin:0 0 8px; }
     h1 { font-size:22px; }
     h2 { font-size:15px; color:#2f433e; }
@@ -165,6 +203,40 @@ const adminBackupPageTemplate = `<!doctype html>
     .danger { border-color:#b47070; background:#ca8888; color:#fff7f7; }
     .danger:hover { background:#b97676; }
     .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
+    .option {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      border:1px solid #d5e2dc;
+      border-radius:10px;
+      background:#f6faf8;
+      padding:8px 10px;
+      font-size:12px;
+      color:#3f5851;
+    }
+    .option input[type=checkbox] { width:18px; height:18px; }
+    .option input[type=number] {
+      width:120px;
+      border:1px solid #bfcec8;
+      border-radius:8px;
+      padding:6px 8px;
+      background:#f9fcfa;
+      color:#1f302a;
+      outline:none;
+    }
+    .mono {
+      margin-top:8px;
+      border:1px dashed #ccd9d3;
+      border-radius:10px;
+      background:#f7fbf9;
+      padding:8px 10px;
+      font-size:11px;
+      color:#4a635c;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      line-height:1.6;
+      white-space:pre-wrap;
+    }
     @media (max-width: 960px) { .grid { grid-template-columns:1fr; } .top { position: static; } }
   </style>
 </head>
@@ -181,24 +253,44 @@ const adminBackupPageTemplate = `<!doctype html>
     {{ if .Error }}<div class="error">{{ .Error }}</div>{{ end }}
 
     <div class="grid">
-      <div class="card">
-        <h2>导出备份</h2>
-        <p class="muted">导出内容包含管理员设置、用户、设备、同步密文、激活码与授权状态。</p>
-        <div class="actions">
-          <a href="/admin/backup/export"><button type="button">下载 JSON 备份</button></a>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>导入备份</h2>
-        <p class="muted">导入会覆盖当前业务数据（users / vault / devices / licenses / entitlements / admin_settings）。</p>
-        <form method="post" action="/admin/backup/import">
-          <textarea name="backup_json" placeholder="粘贴备份 JSON 内容后导入..." required></textarea>
+      <div class="card stack">
+        <h2>导出逻辑备份（推荐）</h2>
+        <p class="muted">跨版本迁移优先使用此 JSON。默认覆盖：admin_settings / users / vault_blobs / snippets / user_devices / sync_license_codes / user_sync_entitlements。</p>
+        <form method="get" action="/admin/backup/export" class="stack">
+          <label class="option">
+            <span>包含审计日志（admin_audit_logs）</span>
+            <input type="checkbox" name="include_audit" value="true" />
+          </label>
+          <label class="option">
+            <span>审计日志条数上限（1-200000）</span>
+            <input type="number" name="audit_limit" min="1" max="200000" value="5000" />
+          </label>
           <div class="actions">
-            <button class="danger" type="submit">执行导入（覆盖现有数据）</button>
+            <button type="submit">下载逻辑 JSON 备份</button>
           </div>
         </form>
       </div>
+
+      <div class="card stack">
+        <h2>导出数据库快照（SQL）</h2>
+        <p class="muted">用于灾难恢复，包含当前数据库完整结构与数据（由 pg_dump 生成）。跨版本迁移仍建议优先使用逻辑 JSON。</p>
+        <div class="actions">
+          <a href="/admin/backup/export/sql"><button type="button">下载完整 SQL 快照</button></a>
+        </div>
+        <div class="mono">恢复示例（容器内）:
+psql "$DATABASE_URL" -f orbitterm-db-snapshot-*.sql</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+      <h2>导入逻辑备份（JSON）</h2>
+      <p class="muted">导入会覆盖业务核心数据（users / vault / snippets / devices / licenses / entitlements / admin_settings）。建议先导出当前备份再导入。</p>
+      <form method="post" action="/admin/backup/import">
+        <textarea name="backup_json" placeholder="粘贴备份 JSON 内容后导入..." required></textarea>
+        <div class="actions">
+          <button class="danger" type="submit">执行导入（覆盖现有数据）</button>
+        </div>
+      </form>
     </div>
   </div>
 </body>
@@ -223,7 +315,21 @@ func (a *app) handleAdminBackupPage(c *gin.Context) {
 }
 
 func (a *app) handleAdminBackupExport(c *gin.Context) {
-	payload, err := a.buildAdminBackupPayload(c.Request.Context())
+	includeAudit := strings.TrimSpace(c.Query("include_audit")) == "true"
+	auditLimit := 5000
+	if includeAudit {
+		if raw := strings.TrimSpace(c.Query("audit_limit")); raw != "" {
+			parsed, parseErr := strconv.Atoi(raw)
+			if parseErr != nil || parsed <= 0 || parsed > 200000 {
+				a.writeAdminAuditFromRequest(c, "admin.backup.export", "logical-json", "failed", "invalid audit_limit")
+				c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("audit_limit 必须在 1~200000 之间。"))
+				return
+			}
+			auditLimit = parsed
+		}
+	}
+
+	payload, err := a.buildAdminBackupPayload(c.Request.Context(), strings.TrimSpace(c.GetString("adminUsername")), includeAudit, auditLimit)
 	if err != nil {
 		a.writeAdminAuditFromRequest(c, "admin.backup.export", "all", "failed", "build payload failed")
 		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("备份导出失败，请稍后重试。"))
@@ -236,11 +342,53 @@ func (a *app) handleAdminBackupExport(c *gin.Context) {
 		return
 	}
 
-	filename := "orbitterm-admin-backup-" + time.Now().UTC().Format("20060102-150405") + ".json"
+	filename := "orbitterm-admin-logical-backup-" + time.Now().UTC().Format("20060102-150405") + ".json"
 	a.writeAdminAuditFromRequest(c, "admin.backup.export", "all", "ok", "backup json exported")
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Data(http.StatusOK, "application/json; charset=utf-8", encoded)
+}
+
+func (a *app) handleAdminBackupExportSQL(c *gin.Context) {
+	if _, err := exec.LookPath("pg_dump"); err != nil {
+		a.writeAdminAuditFromRequest(c, "admin.backup.export", "database-sql", "failed", "pg_dump not found")
+		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("当前服务镜像缺少 pg_dump，无法导出 SQL 快照。"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		ctx,
+		"pg_dump",
+		"--dbname="+a.cfg.DatabaseURL,
+		"--format=plain",
+		"--encoding=UTF8",
+		"--no-owner",
+		"--no-privileges",
+		"--clean",
+		"--if-exists",
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	output, err := cmd.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		a.writeAdminAuditFromRequest(c, "admin.backup.export", "database-sql", "failed", "pg_dump failed: "+detail)
+		c.Redirect(http.StatusFound, "/admin/backup?error="+url.QueryEscape("数据库 SQL 快照导出失败："+detail))
+		return
+	}
+
+	filename := "orbitterm-db-snapshot-" + time.Now().UTC().Format("20060102-150405") + ".sql"
+	a.writeAdminAuditFromRequest(c, "admin.backup.export", "database-sql", "ok", "sql snapshot exported")
+	c.Header("Content-Type", "application/sql; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	c.Data(http.StatusOK, "application/sql; charset=utf-8", output)
 }
 
 func (a *app) handleAdminBackupImport(c *gin.Context) {
@@ -284,7 +432,12 @@ func (a *app) handleAdminBackupImport(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("备份导入成功，请重新登录管理员账号。"))
 }
 
-func (a *app) buildAdminBackupPayload(ctx context.Context) (adminBackupPayload, error) {
+func (a *app) buildAdminBackupPayload(
+	ctx context.Context,
+	exportedBy string,
+	includeAuditLogs bool,
+	auditLimit int,
+) (adminBackupPayload, error) {
 	settings, err := a.readAdminSettings(ctx)
 	if err != nil {
 		return adminBackupPayload{}, err
@@ -295,6 +448,10 @@ func (a *app) buildAdminBackupPayload(ctx context.Context) (adminBackupPayload, 
 		return adminBackupPayload{}, err
 	}
 	vaultBlobs, err := queryBackupVaultBlobs(ctx, a.db)
+	if err != nil {
+		return adminBackupPayload{}, err
+	}
+	snippets, err := queryBackupSnippets(ctx, a.db)
 	if err != nil {
 		return adminBackupPayload{}, err
 	}
@@ -310,16 +467,59 @@ func (a *app) buildAdminBackupPayload(ctx context.Context) (adminBackupPayload, 
 	if err != nil {
 		return adminBackupPayload{}, err
 	}
+	auditLogs := make([]adminBackupAuditLog, 0)
+	if includeAuditLogs {
+		auditLogs, err = queryBackupAuditLogs(ctx, a.db, auditLimit)
+		if err != nil {
+			return adminBackupPayload{}, err
+		}
+	}
+
+	coverage := []string{
+		"admin_settings",
+		"users",
+		"vault_blobs",
+		"snippets",
+		"user_devices",
+		"sync_license_codes",
+		"user_sync_entitlements",
+	}
+	if includeAuditLogs {
+		coverage = append(coverage, "admin_audit_logs")
+	}
+
+	rowCounts := map[string]int{
+		"admin_settings":         len(settings),
+		"users":                  len(users),
+		"vault_blobs":            len(vaultBlobs),
+		"snippets":               len(snippets),
+		"user_devices":           len(devices),
+		"sync_license_codes":     len(licenseCodes),
+		"user_sync_entitlements": len(entitlements),
+	}
+	if includeAuditLogs {
+		rowCounts["admin_audit_logs"] = len(auditLogs)
+	}
 
 	return adminBackupPayload{
 		SchemaVersion: 1,
 		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		Meta: adminBackupMeta{
+			BackupKind:       "logical-json",
+			ExportedBy:       strings.TrimSpace(exportedBy),
+			IncludeAuditLogs: includeAuditLogs,
+			AuditLogLimit:    auditLimit,
+			Coverage:         coverage,
+			RowCounts:        rowCounts,
+		},
 		AdminSettings: settings,
 		Users:         users,
 		VaultBlobs:    vaultBlobs,
+		Snippets:      snippets,
 		UserDevices:   devices,
 		LicenseCodes:  licenseCodes,
 		Entitlements:  entitlements,
+		AuditLogs:     auditLogs,
 	}, nil
 }
 
@@ -364,6 +564,49 @@ func queryBackupVaultBlobs(ctx context.Context, db *sql.DB) ([]adminBackupVaultB
 		if err := rows.Scan(&item.UserID, &item.Version, &item.EncryptedBlobBase64, &updatedAt); err != nil {
 			return nil, err
 		}
+		item.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func queryBackupSnippets(ctx context.Context, db *sql.DB) ([]adminBackupSnippet, error) {
+	rows, err := db.QueryContext(
+		ctx,
+		`SELECT id, user_id, title, command, COALESCE(array_to_json(tags)::text, '[]') AS tags_json, created_at, updated_at
+		 FROM snippets
+		 ORDER BY updated_at ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]adminBackupSnippet, 0, 512)
+	for rows.Next() {
+		var (
+			item      adminBackupSnippet
+			tagsJSON  string
+			createdAt time.Time
+			updatedAt time.Time
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.UserID,
+			&item.Title,
+			&item.Command,
+			&tagsJSON,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(tagsJSON) != "" {
+			if unmarshalErr := json.Unmarshal([]byte(tagsJSON), &item.Tags); unmarshalErr != nil {
+				item.Tags = nil
+			}
+		}
+		item.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 		item.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
 		result = append(result, item)
 	}
@@ -523,6 +766,49 @@ func queryBackupEntitlements(ctx context.Context, db *sql.DB) ([]adminBackupUser
 	return result, rows.Err()
 }
 
+func queryBackupAuditLogs(ctx context.Context, db *sql.DB, limit int) ([]adminBackupAuditLog, error) {
+	if limit <= 0 || limit > 200000 {
+		limit = 5000
+	}
+	rows, err := db.QueryContext(
+		ctx,
+		`SELECT id, actor_username, actor_role, action, target, result, detail, ip, user_agent, created_at
+		 FROM admin_audit_logs
+		 ORDER BY id DESC
+		 LIMIT $1`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]adminBackupAuditLog, 0, limit)
+	for rows.Next() {
+		var (
+			item      adminBackupAuditLog
+			createdAt time.Time
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.ActorUsername,
+			&item.ActorRole,
+			&item.Action,
+			&item.Target,
+			&item.Result,
+			&item.Detail,
+			&item.IP,
+			&item.UserAgent,
+			&createdAt,
+		); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (a *app) importAdminBackupPayload(ctx context.Context, payload adminBackupPayload) error {
 	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
@@ -532,7 +818,7 @@ func (a *app) importAdminBackupPayload(ctx context.Context, payload adminBackupP
 		_ = tx.Rollback()
 	}()
 
-	if err := wipeAdminBackupData(ctx, tx); err != nil {
+	if err := wipeAdminBackupData(ctx, tx, payload); err != nil {
 		return err
 	}
 	if err := insertAdminBackupData(ctx, tx, payload); err != nil {
@@ -544,7 +830,7 @@ func (a *app) importAdminBackupPayload(ctx context.Context, payload adminBackupP
 	return nil
 }
 
-func wipeAdminBackupData(ctx context.Context, tx *sql.Tx) error {
+func wipeAdminBackupData(ctx context.Context, tx *sql.Tx, payload adminBackupPayload) error {
 	statements := []string{
 		`DELETE FROM user_devices`,
 		`DELETE FROM vault_blobs`,
@@ -553,6 +839,10 @@ func wipeAdminBackupData(ctx context.Context, tx *sql.Tx) error {
 		`DELETE FROM snippets`,
 		`DELETE FROM users`,
 		`DELETE FROM admin_settings`,
+	}
+	includeAudit := payload.Meta.IncludeAuditLogs || len(payload.AuditLogs) > 0
+	if includeAudit {
+		statements = append(statements, `DELETE FROM admin_audit_logs`)
 	}
 	for _, stmt := range statements {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
@@ -563,6 +853,8 @@ func wipeAdminBackupData(ctx context.Context, tx *sql.Tx) error {
 }
 
 func insertAdminBackupData(ctx context.Context, tx *sql.Tx, payload adminBackupPayload) error {
+	includeAudit := payload.Meta.IncludeAuditLogs || len(payload.AuditLogs) > 0
+
 	if len(payload.AdminSettings) > 0 {
 		if err := upsertAdminSettingsTx(ctx, tx, payload.AdminSettings); err != nil {
 			return err
@@ -592,6 +884,27 @@ func insertAdminBackupData(ctx context.Context, tx *sql.Tx, payload adminBackupP
 			blob.Version,
 			blob.EncryptedBlobBase64,
 			blob.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+
+	for _, snippet := range payload.Snippets {
+		tags := snippet.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO snippets (id, user_id, title, command, tags, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5::text[], $6, $7)`,
+			snippet.ID,
+			snippet.UserID,
+			snippet.Title,
+			snippet.Command,
+			toPostgresTextArrayLiteral(tags),
+			snippet.CreatedAt,
+			snippet.UpdatedAt,
 		); err != nil {
 			return err
 		}
@@ -703,5 +1016,53 @@ func insertAdminBackupData(ctx context.Context, tx *sql.Tx, payload adminBackupP
 			return err
 		}
 	}
+
+	if includeAudit {
+		var maxAuditID int64
+		for _, logItem := range payload.AuditLogs {
+			if logItem.ID > maxAuditID {
+				maxAuditID = logItem.ID
+			}
+			if _, err := tx.ExecContext(
+				ctx,
+				`INSERT INTO admin_audit_logs (id, actor_username, actor_role, action, target, result, detail, ip, user_agent, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+				logItem.ID,
+				logItem.ActorUsername,
+				logItem.ActorRole,
+				logItem.Action,
+				logItem.Target,
+				logItem.Result,
+				logItem.Detail,
+				logItem.IP,
+				logItem.UserAgent,
+				logItem.CreatedAt,
+			); err != nil {
+				return err
+			}
+		}
+		if maxAuditID > 0 {
+			if _, err := tx.ExecContext(
+				ctx,
+				`SELECT setval(pg_get_serial_sequence('admin_audit_logs', 'id'), $1, true)`,
+				maxAuditID,
+			); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func toPostgresTextArrayLiteral(items []string) string {
+	if len(items) == 0 {
+		return "{}"
+	}
+	escaped := make([]string, 0, len(items))
+	for _, item := range items {
+		value := strings.ReplaceAll(item, `\`, `\\`)
+		value = strings.ReplaceAll(value, `"`, `\"`)
+		escaped = append(escaped, `"`+value+`"`)
+	}
+	return "{" + strings.Join(escaped, ",") + "}"
 }

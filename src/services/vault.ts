@@ -20,11 +20,6 @@ export interface VaultSyncExportResponse {
   updatedAt: number;
 }
 
-export interface ExportEncryptedBackupResponse {
-  path: string;
-  bytes: number;
-}
-
 export const unlockAndLoad = async (
   masterPassword: string
 ): Promise<UnlockAndLoadResponse> => {
@@ -45,26 +40,6 @@ export const saveVault = async (
       hosts,
       identities,
       snippets
-    }
-  });
-};
-
-export const exportEncryptedBackup = async (
-  destinationPath: string
-): Promise<ExportEncryptedBackupResponse> => {
-  return tauriInvoke<ExportEncryptedBackupResponse>('export_encrypted_backup', {
-    request: {
-      destinationPath
-    }
-  });
-};
-
-export const importEncryptedBackup = async (
-  sourcePath: string
-): Promise<UnlockAndLoadResponse> => {
-  return tauriInvoke<UnlockAndLoadResponse>('import_encrypted_backup', {
-    request: {
-      sourcePath
     }
   });
 };

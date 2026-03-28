@@ -19,8 +19,7 @@ use crate::e2ee::{
     encrypt_cloud_vault_with_derived_key, CloudVault, E2eeError, EncryptedVault, DERIVED_KEY_LEN,
 };
 use crate::models::{
-    ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HostAdvancedOptions,
-    HostAuthConfig, HostConfig, IdentityConfig, ImportEncryptedBackupRequest, SaveVaultRequest,
+    HostAdvancedOptions, HostAuthConfig, HostConfig, IdentityConfig, SaveVaultRequest,
     SaveVaultResponse, Snippet, UnlockAndLoadRequest, UnlockAndLoadResponse,
     VaultSyncExportResponse, VaultSyncImportRequest,
 };
@@ -113,23 +112,6 @@ pub async fn save_vault(
     request: SaveVaultRequest,
 ) -> Result<SaveVaultResponse, String> {
     let result = save_vault_inner(&app, &state, request).await;
-    result.map_err(|err| err.user_message())
-}
-
-pub async fn export_encrypted_backup(
-    app: AppHandle,
-    request: ExportEncryptedBackupRequest,
-) -> Result<ExportEncryptedBackupResponse, String> {
-    let result = export_encrypted_backup_inner(&app, request).await;
-    result.map_err(|err| err.user_message())
-}
-
-pub async fn import_encrypted_backup(
-    app: AppHandle,
-    state: State<'_, VaultSessionState>,
-    request: ImportEncryptedBackupRequest,
-) -> Result<UnlockAndLoadResponse, String> {
-    let result = import_encrypted_backup_inner(&app, &state, request).await;
     result.map_err(|err| err.user_message())
 }
 
@@ -281,126 +263,6 @@ async fn save_vault_inner(
     Ok(SaveVaultResponse {
         version: next_version,
         updated_at: next_updated_at,
-    })
-}
-
-async fn export_encrypted_backup_inner(
-    app: &AppHandle,
-    request: ExportEncryptedBackupRequest,
-) -> Result<ExportEncryptedBackupResponse, VaultError> {
-    let destination = request.destination_path.trim();
-    if destination.is_empty() {
-        return Err(VaultError::WriteFailed("请选择备份导出路径。".to_string()));
-    }
-
-    let source_path = resolve_vault_path(app, VAULT_FILENAME).await?;
-    let exists = fs::try_exists(&source_path)
-        .await
-        .map_err(|_| VaultError::ReadFailed)?;
-    if !exists {
-        return Err(VaultError::BackupSourceMissing);
-    }
-
-    let encrypted_bytes = fs::read(&source_path)
-        .await
-        .map_err(|_| VaultError::ReadFailed)?;
-
-    let destination_path = PathBuf::from(destination);
-    if let Some(parent) = destination_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(map_write_io_error)?;
-        }
-    }
-
-    atomic_write(&destination_path, &encrypted_bytes).await?;
-
-    Ok(ExportEncryptedBackupResponse {
-        path: destination.to_string(),
-        bytes: encrypted_bytes.len() as u64,
-    })
-}
-
-async fn import_encrypted_backup_inner(
-    app: &AppHandle,
-    state: &State<'_, VaultSessionState>,
-    request: ImportEncryptedBackupRequest,
-) -> Result<UnlockAndLoadResponse, VaultError> {
-    let source = request.source_path.trim();
-    if source.is_empty() {
-        return Err(VaultError::ReadFailed);
-    }
-
-    let source_path = PathBuf::from(source);
-    let exists = fs::try_exists(&source_path)
-        .await
-        .map_err(|_| VaultError::ReadFailed)?;
-    if !exists {
-        return Err(VaultError::BackupSourceMissing);
-    }
-
-    let file_bytes = fs::read(&source_path)
-        .await
-        .map_err(|_| VaultError::ReadFailed)?;
-    if file_bytes.is_empty() {
-        return Err(VaultError::Corrupted);
-    }
-
-    let master_password = {
-        let guard = state.master_password.read().await;
-        let password = guard.as_ref().ok_or(VaultError::VaultLocked)?;
-        password.to_string()
-    };
-
-    let (encrypted, decrypted, persisted_bytes) = if let Ok(encrypted) =
-        parse_encrypted_sync_blob(&file_bytes)
-    {
-        let decrypted = decrypt_cloud_vault(master_password.as_str(), &encrypted)?;
-        let persisted_bytes = serde_json::to_vec(&encrypted).map_err(|_| VaultError::Corrupted)?;
-        (encrypted, decrypted, persisted_bytes)
-    } else {
-        let decrypted = parse_plain_sync_vault(&file_bytes)?;
-        let encrypted = encrypt_cloud_vault(master_password.as_str(), &decrypted)?;
-        let persisted_bytes = serde_json::to_vec(&encrypted).map_err(|_| VaultError::Corrupted)?;
-        (encrypted, decrypted, persisted_bytes)
-    };
-
-    let derived_key = derive_session_key(master_password.as_str(), &encrypted)?;
-    let (hosts, identities, snippets) = parse_vault_data(&decrypted)?;
-
-    let mut salt = [0_u8; 16];
-    if encrypted.salt.len() != salt.len() {
-        return Err(VaultError::Corrupted);
-    }
-    salt.copy_from_slice(&encrypted.salt);
-
-    let vault_path = resolve_vault_path(app, VAULT_FILENAME).await?;
-    atomic_write(&vault_path, &persisted_bytes).await?;
-
-    {
-        let mut key_guard = state.derived_key.write().await;
-        *key_guard = Some(derived_key);
-    }
-    {
-        let mut salt_guard = state.salt.write().await;
-        *salt_guard = Some(salt);
-    }
-    {
-        let mut version_guard = state.version.write().await;
-        *version_guard = Some(decrypted.version);
-    }
-    {
-        let mut updated_at_guard = state.updated_at.write().await;
-        *updated_at_guard = Some(decrypted.updated_at);
-    }
-
-    Ok(UnlockAndLoadResponse {
-        hosts,
-        identities,
-        snippets,
-        version: decrypted.version,
-        updated_at: decrypted.updated_at,
     })
 }
 

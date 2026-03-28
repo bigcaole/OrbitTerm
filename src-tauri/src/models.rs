@@ -375,25 +375,6 @@ pub struct VaultSyncExportResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExportEncryptedBackupRequest {
-    pub destination_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExportEncryptedBackupResponse {
-    pub path: String,
-    pub bytes: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportEncryptedBackupRequest {
-    pub source_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct HealthCheckItem {
     pub id: String,
     pub label: String,

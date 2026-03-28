@@ -8,7 +8,6 @@ import {
   type MouseEvent as ReactMouseEvent
 } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { appWindow } from '@tauri-apps/api/window';
 import { Toaster, toast } from 'sonner';
 import { Step1 } from './components/wizard/Step1';
@@ -42,7 +41,6 @@ import type { HealthCheckResponse, SshDiagnosticLogEvent } from './services/insp
 import { runHealthCheck } from './services/inspector';
 import { sshDisconnect, sshQueryPwd, sshSetPulseActivity, sshWrite, type SshSysStatusEvent } from './services/ssh';
 import type { SftpTransferProgressEvent } from './services/sftp';
-import { exportEncryptedBackup } from './services/vault';
 import { getAppVersion } from './services/appInfo';
 import {
   checkReleaseAvailability,
@@ -503,7 +501,6 @@ function App(): JSX.Element {
   const addSnippet = useHostStore((state) => state.addSnippet);
   const updateSnippet = useHostStore((state) => state.updateSnippet);
   const deleteSnippet = useHostStore((state) => state.deleteSnippet);
-  const importLocalBackup = useHostStore((state) => state.importLocalBackup);
 
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
@@ -1732,64 +1729,6 @@ function App(): JSX.Element {
 
   const handleAskAiForSshFix = async (errorMessage: string, logContext: string[]) => {
     return aiExplainSshError(errorMessage, logContext);
-  };
-
-  const handleExportEncryptedBackup = async (): Promise<void> => {
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    const selectedPath = await saveDialog({
-      defaultPath: `orbitterm-vault-backup-${yyyy}${mm}${dd}.bin`
-    });
-
-    if (!selectedPath || Array.isArray(selectedPath)) {
-      return;
-    }
-
-    try {
-      const result = await exportEncryptedBackup(selectedPath);
-      toast.success('加密备份导出成功', {
-        description: `路径：${result.path}（${result.bytes} bytes）`
-      });
-    } catch (error) {
-      const fallback = '导出加密备份失败，请检查目标目录权限。';
-      const message = error instanceof Error ? error.message : fallback;
-      toast.error(message || fallback);
-    }
-  };
-
-  const handleImportEncryptedBackup = async (): Promise<void> => {
-    const selected = await openDialog({
-      multiple: false,
-      filters: [
-        {
-          name: 'OrbitTerm Backup',
-          extensions: ['bin', 'json']
-        }
-      ]
-    });
-    if (!selected || Array.isArray(selected)) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      '导入备份会覆盖当前本地金库内容（主机/身份/指令库），确定继续吗？'
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      await importLocalBackup(selected);
-      toast.success('备份导入成功', {
-        description: `已恢复文件：${selected}`
-      });
-    } catch (error) {
-      const fallback = '导入加密备份失败，请检查文件和当前金库主密码。';
-      const message = error instanceof Error ? error.message : fallback;
-      toast.error(message || fallback);
-    }
   };
 
   const handleDeleteHost = async (hostId: string, hostName: string): Promise<void> => {
@@ -3182,8 +3121,6 @@ function App(): JSX.Element {
         onClose={() => {
           setIsInspectorOpen(false);
         }}
-        onExportBackup={handleExportEncryptedBackup}
-        onImportBackup={handleImportEncryptedBackup}
         onRefreshHealth={async () => {
           await performHealthCheck(true);
         }}

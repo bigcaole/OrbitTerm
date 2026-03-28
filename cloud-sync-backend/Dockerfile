@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata postgresql16-client
 RUN addgroup -S orbitterm && adduser -S orbitterm -G orbitterm
 
 ENV TZ=UTC

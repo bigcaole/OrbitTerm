@@ -13,8 +13,6 @@ interface OrbitInspectorProps {
   healthReport: HealthCheckResponse | null;
   onClose: () => void;
   onAskAi: (errorMessage: string, logContext: string[]) => Promise<AiExplainSshErrorResponse>;
-  onExportBackup: () => Promise<void>;
-  onImportBackup: () => Promise<void>;
   onRefreshHealth: () => Promise<void>;
   onClearAppLogs: () => void;
 }
@@ -47,8 +45,6 @@ export function OrbitInspector({
   healthReport,
   onClose,
   onAskAi,
-  onExportBackup,
-  onImportBackup,
   onRefreshHealth,
   onClearAppLogs
 }: OrbitInspectorProps): JSX.Element | null {
@@ -56,8 +52,6 @@ export function OrbitInspector({
   const [aiAdvice, setAiAdvice] = useState<AiExplainSshErrorResponse | null>(null);
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [backupLoading, setBackupLoading] = useState<boolean>(false);
-  const [importBackupLoading, setImportBackupLoading] = useState<boolean>(false);
 
   const visibleLogs = useMemo(() => {
     const scoped = sessionId ? logs.filter((item) => item.sessionId === sessionId) : logs;
@@ -99,24 +93,6 @@ export function OrbitInspector({
     }
   };
 
-  const handleExportBackup = async (): Promise<void> => {
-    setBackupLoading(true);
-    try {
-      await onExportBackup();
-    } finally {
-      setBackupLoading(false);
-    }
-  };
-
-  const handleImportBackup = async (): Promise<void> => {
-    setImportBackupLoading(true);
-    try {
-      await onImportBackup();
-    } finally {
-      setImportBackupLoading(false);
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-[125] flex items-center justify-center bg-[#02050a]/45 p-4 backdrop-blur-sm">
       <aside className="h-[min(86vh,860px)] w-full max-w-5xl overflow-hidden rounded-3xl border border-[#2a4266] bg-[#071121]/95 text-[#d7e5ff] shadow-2xl shadow-black/60">
@@ -147,9 +123,9 @@ export function OrbitInspector({
                 }}
                 type="button"
               >
-                  {t('inspector.recheck')}
-                </button>
-              </div>
+                {t('inspector.recheck')}
+              </button>
+            </div>
             {healthReport ? (
               <div className="space-y-2">
                 {healthReport.items.map((item) => (
@@ -213,39 +189,6 @@ export function OrbitInspector({
                 </p>
               </div>
             )}
-          </section>
-
-          <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">
-                {t('inspector.section.backup')}
-              </h3>
-              <div className="flex items-center gap-2">
-                <button
-                  className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={importBackupLoading}
-                  onClick={() => {
-                    void handleImportBackup();
-                  }}
-                  type="button"
-                >
-                  {importBackupLoading ? t('inspector.importing') : t('inspector.importBackup')}
-                </button>
-                <button
-                  className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={backupLoading}
-                  onClick={() => {
-                    void handleExportBackup();
-                  }}
-                  type="button"
-                >
-                  {backupLoading ? t('inspector.exporting') : t('inspector.exportBackup')}
-                </button>
-              </div>
-            </div>
-            <p className="text-[11px] text-[#8ea4c7]">
-              导入/导出均使用加密后的 vault.bin，恢复时会忽略设备差异并重建本地配置。
-            </p>
           </section>
 
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">

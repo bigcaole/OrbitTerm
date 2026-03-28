@@ -12,7 +12,6 @@ import type { HostConfig, IdentityConfig, Snippet } from '../types/host';
 import {
   clearVaultSession,
   exportVaultSyncBlob,
-  importEncryptedBackup,
   importVaultSyncBlob,
   saveVault,
   unlockAndLoad
@@ -120,7 +119,6 @@ interface HostState {
   revokeAllCloudDevices: () => Promise<void>;
   syncPushToCloud: (options?: CloudSyncPushOptions) => Promise<void>;
   syncPullFromCloud: (options?: CloudSyncPullOptions) => Promise<void>;
-  importLocalBackup: (sourcePath: string) => Promise<void>;
   setHosts: (hosts: HostConfig[]) => void;
   setIdentities: (identities: IdentityConfig[]) => void;
   addIdentity: (payload: {
@@ -1452,51 +1450,6 @@ export const useHostStore = create<HostState>((set, get) => ({
         });
       }
     });
-  },
-  importLocalBackup: async (sourcePath) => {
-    const normalizedPath = sourcePath.trim();
-    if (!normalizedPath) {
-      throw new Error('请选择要导入的备份文件。');
-    }
-
-    set({ isSavingVault: true, saveError: null });
-    try {
-      const imported = await importEncryptedBackup(normalizedPath);
-      const normalized = normalizeVaultSnapshot({
-        hosts: imported.hosts,
-        identities: imported.identities,
-        snippets: imported.snippets
-      });
-      set({
-        hosts: normalized.hosts,
-        identities: normalized.identities,
-        snippets: normalized.snippets,
-        vaultVersion: imported.version,
-        vaultUpdatedAt: imported.updatedAt,
-        isSavingVault: false,
-        saveError: null
-      });
-      if (normalized.discarded > 0) {
-        toast.warning(`恢复备份时忽略了 ${normalized.discarded} 条异常配置。`);
-      }
-      logAppInfo('vault-backup', '本地备份导入成功', {
-        path: normalizedPath,
-        version: imported.version,
-        discarded: normalized.discarded
-      });
-    } catch (error) {
-      const fallback = '导入加密备份失败，请检查文件和主密码。';
-      const message = extractErrorMessage(error, fallback);
-      set({
-        isSavingVault: false,
-        saveError: message || fallback
-      });
-      logAppError('vault-backup', '本地备份导入失败', {
-        path: normalizedPath,
-        message: message || fallback
-      });
-      throw new Error(message || fallback);
-    }
   },
   setHosts: (hosts) => {
     const normalized = normalizeVaultSnapshot({
