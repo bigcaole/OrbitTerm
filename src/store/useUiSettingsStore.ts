@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
 import type { OrbitThemePresetId } from '../theme/orbitTheme';
 
+export type CloseWindowAction = 'ask' | 'tray' | 'exit';
+
 interface UiSettingsState {
   terminalFontSize: number;
   terminalFontFamily: string;
@@ -13,6 +15,7 @@ interface UiSettingsState {
   themePresetId: OrbitThemePresetId;
   autoLockEnabled: boolean;
   autoLockMinutes: number;
+  closeWindowAction: CloseWindowAction;
   hasCompletedOnboarding: boolean;
   hostUsageStats: Record<string, { count: number; lastConnectedAt: number }>;
   setTerminalFontSize: (value: number) => void;
@@ -25,6 +28,7 @@ interface UiSettingsState {
   setThemePresetId: (value: OrbitThemePresetId) => void;
   setAutoLockEnabled: (value: boolean) => void;
   setAutoLockMinutes: (value: number) => void;
+  setCloseWindowAction: (value: CloseWindowAction) => void;
   setHasCompletedOnboarding: (value: boolean) => void;
   recordHostConnection: (hostId: string) => void;
 }
@@ -84,6 +88,16 @@ const normalizeHostUsageStats = (value: unknown): Record<string, { count: number
   return next;
 };
 
+const normalizeCloseWindowAction = (
+  value: unknown,
+  fallback: CloseWindowAction
+): CloseWindowAction => {
+  if (value === 'ask' || value === 'tray' || value === 'exit') {
+    return value;
+  }
+  return fallback;
+};
+
 export const useUiSettingsStore = create<UiSettingsState>()(
   persist(
     (set) => ({
@@ -98,6 +112,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       themePresetId: 'abyss',
       autoLockEnabled: true,
       autoLockMinutes: 5,
+      closeWindowAction: 'ask',
       hasCompletedOnboarding: false,
       hostUsageStats: {},
       setTerminalFontSize: (value) => {
@@ -133,6 +148,9 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       },
       setAutoLockMinutes: (value) => {
         set({ autoLockMinutes: clamp(Math.round(value), 1, 120) });
+      },
+      setCloseWindowAction: (value) => {
+        set({ closeWindowAction: normalizeCloseWindowAction(value, 'ask') });
       },
       setHasCompletedOnboarding: (value) => {
         set({ hasCompletedOnboarding: value });
@@ -206,6 +224,10 @@ export const useUiSettingsStore = create<UiSettingsState>()(
             typeof persisted.autoLockMinutes === 'number'
               ? clamp(Math.round(persisted.autoLockMinutes), 1, 120)
               : currentState.autoLockMinutes,
+          closeWindowAction: normalizeCloseWindowAction(
+            persisted.closeWindowAction,
+            currentState.closeWindowAction
+          ),
           hasCompletedOnboarding:
             typeof persisted.hasCompletedOnboarding === 'boolean'
               ? persisted.hasCompletedOnboarding
@@ -224,6 +246,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
         themePresetId: state.themePresetId,
         autoLockEnabled: state.autoLockEnabled,
         autoLockMinutes: state.autoLockMinutes,
+        closeWindowAction: state.closeWindowAction,
         hasCompletedOnboarding: state.hasCompletedOnboarding,
         hostUsageStats: state.hostUsageStats
       })

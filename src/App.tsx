@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { save as saveDialog } from '@tauri-apps/api/dialog';
+import { appWindow } from '@tauri-apps/api/window';
 import { Toaster, toast } from 'sonner';
 import { Step1 } from './components/wizard/Step1';
 import { Step2 } from './components/wizard/Step2';
@@ -31,6 +32,7 @@ import { SftpManager } from './components/sftp/SftpManager';
 import { TransferCenter } from './components/transfer/TransferCenter';
 import { AboutOrbitTermModal } from './components/settings/AboutOrbitTermModal';
 import { SettingsDrawer, type SettingsCategory } from './components/settings/SettingsDrawer';
+import { CloudAuthModal } from './components/cloud/CloudAuthModal';
 import { useHostStore } from './store/useHostStore';
 import { useUiSettingsStore } from './store/useUiSettingsStore';
 import { useTransferStore } from './store/useTransferStore';
@@ -83,6 +85,7 @@ const darkPanelButtonClass =
 const SFTP_PANEL_MIN_WIDTH = 280;
 const SFTP_PANEL_MAX_WIDTH = 680;
 const IDLE_RELEASE_CHECK_MS = 5 * 60 * 1000;
+const AUTO_PULL_INTERVAL_MS = 25_000;
 
 const SETTINGS_SECTION_CATEGORY_MAP: Record<string, SettingsCategory> = {
   'settings-font': 'settings',
@@ -407,8 +410,8 @@ const PALETTE_SETTINGS_ENTRIES: ReadonlyArray<PaletteSettingEntry> = [
   {
     id: 'settings-sync',
     title: '设置 · 私有云同步',
-    subtitle: '账号登录、拉取/推送与同步状态',
-    keywords: ['同步', 'cloud', 'push', 'pull', '账号'],
+    subtitle: '同步状态、手动拉取与会话信息',
+    keywords: ['同步', 'cloud', 'push', 'pull', '状态'],
     sectionId: 'settings-sync'
   },
   {
@@ -460,6 +463,11 @@ function App(): JSX.Element {
   const [sysStatusBySession, setSysStatusBySession] = useState<Record<string, SessionSysStatus>>({});
   const [splitWorkspaces, setSplitWorkspaces] = useState<Record<string, TabSplitWorkspace>>({});
   const [splitMenu, setSplitMenu] = useState<SplitMenuState | null>(null);
+  const [isCloudAuthModalOpen, setIsCloudAuthModalOpen] = useState<boolean>(false);
+  const [skippedCloudAuthForCurrentUnlock, setSkippedCloudAuthForCurrentUnlock] =
+    useState<boolean>(false);
+  const [isCloseWindowPromptOpen, setIsCloseWindowPromptOpen] = useState<boolean>(false);
+  const [rememberCloseActionChoice, setRememberCloseActionChoice] = useState<boolean>(false);
 
   const appView = useHostStore((state) => state.appView);
   const hosts = useHostStore((state) => state.hosts);
@@ -504,6 +512,8 @@ function App(): JSX.Element {
   const themePresetId = useUiSettingsStore((state) => state.themePresetId);
   const autoLockEnabled = useUiSettingsStore((state) => state.autoLockEnabled);
   const autoLockMinutes = useUiSettingsStore((state) => state.autoLockMinutes);
+  const closeWindowAction = useUiSettingsStore((state) => state.closeWindowAction);
+  const setCloseWindowAction = useUiSettingsStore((state) => state.setCloseWindowAction);
   const hasCompletedOnboarding = useUiSettingsStore((state) => state.hasCompletedOnboarding);
   const hostUsageStats = useUiSettingsStore((state) => state.hostUsageStats);
   const recordHostConnection = useUiSettingsStore((state) => state.recordHostConnection);
@@ -651,6 +661,7 @@ function App(): JSX.Element {
   const hostSearchInputRef = useRef<HTMLInputElement | null>(null);
   const splitWorkspacesRef = useRef<Record<string, TabSplitWorkspace>>(splitWorkspaces);
   const manualDetachedClosingRef = useRef<Set<string>>(new Set());
+  const allowWindowCloseRef = useRef<boolean>(false);
 
   const tagStats = useMemo(() => {
     const map = new Map<string, number>();
@@ -1329,6 +1340,86 @@ function App(): JSX.Element {
     }
   }, [isSettingsOpen]);
 
+  useEffect(() => {
+    if (appView !== 'dashboard') {
+      setIsCloudAuthModalOpen(false);
+      setSkippedCloudAuthForCurrentUnlock(false);
+      return;
+    }
+    if (cloudSyncSession) {
+      setIsCloudAuthModalOpen(false);
+      return;
+    }
+    if (!skippedCloudAuthForCurrentUnlock) {
+      setIsCloudAuthModalOpen(true);
+    }
+  }, [appView, cloudSyncSession, skippedCloudAuthForCurrentUnlock]);
+
+  useEffect(() => {
+    if (appView !== 'dashboard' || !cloudSyncSession) {
+      return;
+    }
+
+    const runAutoPull = (): void => {
+      void syncPullFromCloud({ source: 'auto' });
+    };
+
+    const intervalId = window.setInterval(runAutoPull, AUTO_PULL_INTERVAL_MS);
+    const onFocus = (): void => {
+      runAutoPull();
+    };
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') {
+        runAutoPull();
+      }
+    };
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [appView, cloudSyncSession, syncPullFromCloud]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+
+    void appWindow.onCloseRequested((event) => {
+      if (allowWindowCloseRef.current) {
+        return;
+      }
+      event.preventDefault();
+      if (closeWindowAction === 'tray') {
+        void appWindow.hide();
+        return;
+      }
+      if (closeWindowAction === 'exit') {
+        allowWindowCloseRef.current = true;
+        void appWindow.close();
+        return;
+      }
+      setIsCloseWindowPromptOpen(true);
+      setRememberCloseActionChoice(false);
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [closeWindowAction]);
+
   const detectDownloadableRelease = useCallback(async (): Promise<void> => {
     const checkedAt = new Date().toISOString();
     try {
@@ -1793,7 +1884,8 @@ function App(): JSX.Element {
 
   const handleManualPullSync = async (): Promise<void> => {
     if (!cloudSyncSession) {
-      toast.message('请先在设置中心登录私有云同步账号。');
+      toast.message('请先登录私有云同步账号。');
+      setIsCloudAuthModalOpen(true);
       return;
     }
 
@@ -1808,7 +1900,8 @@ function App(): JSX.Element {
 
   const handleManualForcePushSync = async (): Promise<void> => {
     if (!cloudSyncSession) {
-      toast.message('请先在设置中心登录私有云同步账号。');
+      toast.message('请先登录私有云同步账号。');
+      setIsCloudAuthModalOpen(true);
       return;
     }
 
@@ -2231,7 +2324,12 @@ function App(): JSX.Element {
                       <button
                         className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"
                         onClick={() => {
-                          openSettingsSection('settings-sync');
+                          if (cloudSyncSession) {
+                            openSettingsSection('settings-sync');
+                            return;
+                          }
+                          setIsCloudAuthModalOpen(true);
+                          setIsProfileMenuOpen(false);
                         }}
                         type="button"
                       >
@@ -3069,6 +3167,11 @@ function App(): JSX.Element {
         onOpenAbout={() => {
           setIsAboutOpen(true);
         }}
+        onOpenCloudAuth={() => {
+          setIsCloudAuthModalOpen(true);
+          setSkippedCloudAuthForCurrentUnlock(false);
+          setIsSettingsOpen(false);
+        }}
         open={isSettingsOpen}
       />
 
@@ -3091,6 +3194,77 @@ function App(): JSX.Element {
         onSubmit={handleSaveHostEdit}
         open={Boolean(editingHost)}
       />
+
+      <CloudAuthModal
+        onSkip={() => {
+          setIsCloudAuthModalOpen(false);
+          setSkippedCloudAuthForCurrentUnlock(true);
+        }}
+        onSuccess={() => {
+          setIsCloudAuthModalOpen(false);
+          setSkippedCloudAuthForCurrentUnlock(false);
+        }}
+        open={isCloudAuthModalOpen}
+      />
+
+      {isCloseWindowPromptOpen && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-white/45 bg-[#f1f7ff]/95 p-5 shadow-2xl backdrop-blur-2xl">
+            <h3 className="text-base font-semibold text-slate-900">关闭 OrbitTerm</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              你希望本次关闭窗口后“驻留系统托盘”还是“直接退出应用”？
+            </p>
+            <label className="mt-3 inline-flex items-center gap-2 text-xs text-slate-700">
+              <input
+                checked={rememberCloseActionChoice}
+                className="h-4 w-4 accent-[#2f6df4]"
+                onChange={(event) => setRememberCloseActionChoice(event.target.checked)}
+                type="checkbox"
+              />
+              记住我的选择并设为默认
+            </label>
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => {
+                  setIsCloseWindowPromptOpen(false);
+                }}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => {
+                  if (rememberCloseActionChoice) {
+                    setCloseWindowAction('tray');
+                  }
+                  setIsCloseWindowPromptOpen(false);
+                  void appWindow.hide();
+                }}
+                type="button"
+              >
+                驻留系统托盘
+              </button>
+              <button
+                className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                onClick={() => {
+                  if (rememberCloseActionChoice) {
+                    setCloseWindowAction('exit');
+                  }
+                  setIsCloseWindowPromptOpen(false);
+                  allowWindowCloseRef.current = true;
+                  void appWindow.close();
+                }}
+                type="button"
+              >
+                直接退出
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Toaster closeButton expand position="top-right" richColors />
     </main>

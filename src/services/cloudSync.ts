@@ -1,5 +1,6 @@
 import { logAppError, logAppInfo, logAppWarn } from './appLog';
 const CLOUD_SYNC_SESSION_KEY = 'orbitterm:cloud-sync-session:v1';
+const CLOUD_SYNC_CURSOR_KEY = 'orbitterm:cloud-sync-cursor:v1';
 const REQUEST_TIMEOUT_MS = 12_000;
 
 export interface CloudSyncSession {
@@ -39,6 +40,11 @@ export interface SyncStatusResponse {
   hasData: boolean;
   version: number;
   updatedAt?: string;
+}
+
+export interface CloudSyncCursor {
+  version: number;
+  updatedAt: string | null;
 }
 
 export interface CloudDeviceItem {
@@ -191,6 +197,46 @@ const saveSession = (session: CloudSyncSession): void => {
   window.localStorage.setItem(CLOUD_SYNC_SESSION_KEY, JSON.stringify(session));
 };
 
+const normalizeSyncIdentity = (apiBaseUrl: string, email: string): string => {
+  return `${apiBaseUrl.trim().replace(/\/+$/, '').toLowerCase()}|${email.trim().toLowerCase()}`;
+};
+
+const readCursorStore = (): Record<string, CloudSyncCursor> => {
+  const raw = window.localStorage.getItem(CLOUD_SYNC_CURSOR_KEY);
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    const next: Record<string, CloudSyncCursor> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!key || !value || typeof value !== 'object' || Array.isArray(value)) {
+        continue;
+      }
+      const item = value as Record<string, unknown>;
+      const version = parseSyncVersion(item.version, -1);
+      if (version < 0) {
+        continue;
+      }
+      const updatedAt = typeof item.updatedAt === 'string' ? item.updatedAt : null;
+      next[key] = {
+        version,
+        updatedAt
+      };
+    }
+    return next;
+  } catch (_error) {
+    return {};
+  }
+};
+
+const writeCursorStore = (payload: Record<string, CloudSyncCursor>): void => {
+  window.localStorage.setItem(CLOUD_SYNC_CURSOR_KEY, JSON.stringify(payload));
+};
+
 const detectDeviceName = (): string => {
   const platform = (window.navigator.platform || '').toLowerCase();
   if (platform.includes('mac')) {
@@ -241,6 +287,25 @@ export const readCloudSyncSession = (): CloudSyncSession | null => {
 
 export const clearCloudSyncSession = (): void => {
   window.localStorage.removeItem(CLOUD_SYNC_SESSION_KEY);
+};
+
+export const readCloudSyncCursor = (session: CloudSyncSession): CloudSyncCursor | null => {
+  const key = normalizeSyncIdentity(session.apiBaseUrl, session.email);
+  const store = readCursorStore();
+  return store[key] ?? null;
+};
+
+export const writeCloudSyncCursor = (
+  session: CloudSyncSession,
+  cursor: CloudSyncCursor
+): void => {
+  const key = normalizeSyncIdentity(session.apiBaseUrl, session.email);
+  const store = readCursorStore();
+  store[key] = {
+    version: parseSyncVersion(cursor.version, 0),
+    updatedAt: cursor.updatedAt ?? null
+  };
+  writeCursorStore(store);
 };
 
 export const registerCloudSync = async (

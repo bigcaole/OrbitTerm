@@ -26,12 +26,15 @@ import {
   pullCloudSyncBlob,
   pushCloudSyncBlob,
   readCloudSyncSession,
+  readCloudSyncCursor,
   registerCloudSync,
+  writeCloudSyncCursor,
   type CloudDeviceItem,
   type CloudSyncSession
 } from '../services/cloudSync';
 import { type ProxyJumpHop, sshConnect, sshDisconnect } from '../services/ssh';
 import { buildHostKey } from '../utils/hostKey';
+import { logAppError, logAppInfo, logAppWarn } from '../services/appLog';
 
 type WizardStep = 1 | 2 | 3;
 type AppView = 'locked' | 'dashboard';
@@ -613,6 +616,17 @@ const buildCloudPullErrorMessage = (error: unknown, fallback: string): string =>
   return message || fallback;
 };
 
+const persistCloudCursor = (
+  session: CloudSyncSession,
+  version: number,
+  updatedAt: string | null
+): void => {
+  writeCloudSyncCursor(session, {
+    version,
+    updatedAt
+  });
+};
+
 const enqueueCloudSyncTask = <T>(task: () => Promise<T>): Promise<T> => {
   const next = cloudSyncQueue.then(task, task);
   cloudSyncQueue = next.then(
@@ -675,6 +689,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         snippets: response.snippets
       });
       const cloudSession = readCloudSyncSession();
+      const cloudCursor = cloudSession ? readCloudSyncCursor(cloudSession) : null;
       set({
         hosts: normalized.hosts,
         identities: normalized.identities,
@@ -689,8 +704,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         terminalError: null,
         saveError: null,
         cloudSyncSession: cloudSession,
-        cloudSyncVersion: null,
-        cloudSyncLastAt: null,
+        cloudSyncVersion: cloudCursor?.version ?? null,
+        cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
         isLoadingCloudDevices: false,
         cloudSyncError: null
@@ -700,7 +715,10 @@ export const useHostStore = create<HostState>((set, get) => ({
       }
 
       if (cloudSession) {
-        void Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
+        void Promise.all([
+          get().syncPullFromCloud({ source: 'auto' }),
+          get().loadCloudDevices()
+        ]);
       }
     } catch (error) {
       const fallback = '解锁失败，请检查主密码后重试。';
@@ -766,17 +784,21 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isSyncingCloud: true, cloudSyncError: null });
     try {
       const session = await registerCloudSync(apiBaseUrl, email, password);
+      const cloudCursor = readCloudSyncCursor(session);
       set({
         cloudSyncSession: session,
-        cloudSyncVersion: null,
-        cloudSyncLastAt: null,
+        cloudSyncVersion: cloudCursor?.version ?? null,
+        cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
         isLoadingCloudDevices: false,
         isSyncingCloud: false,
         cloudSyncError: null
       });
       if (get().appView === 'dashboard') {
-        await Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
+        await Promise.all([
+          get().syncPullFromCloud({ source: 'auto' }),
+          get().loadCloudDevices()
+        ]);
       }
       toast.success('私有云账号注册成功');
     } catch (error) {
@@ -793,17 +815,21 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isSyncingCloud: true, cloudSyncError: null });
     try {
       const session = await loginCloudSync(apiBaseUrl, email, password);
+      const cloudCursor = readCloudSyncCursor(session);
       set({
         cloudSyncSession: session,
-        cloudSyncVersion: null,
-        cloudSyncLastAt: null,
+        cloudSyncVersion: cloudCursor?.version ?? null,
+        cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
         isLoadingCloudDevices: false,
         isSyncingCloud: false,
         cloudSyncError: null
       });
       if (get().appView === 'dashboard') {
-        await Promise.all([get().syncPullFromCloud(), get().loadCloudDevices()]);
+        await Promise.all([
+          get().syncPullFromCloud({ source: 'auto' }),
+          get().loadCloudDevices()
+        ]);
       }
       toast.success('私有云同步已连接');
     } catch (error) {
@@ -936,6 +962,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       }
       const source = options?.source ?? 'auto';
       const isManual = source === 'manual';
+      const force = options?.force === true;
 
       set({ isSyncingCloud: true, cloudSyncError: null });
       try {
@@ -945,7 +972,7 @@ export const useHostStore = create<HostState>((set, get) => ({
           const remote = await pullCloudSyncBlob(session);
           if (remote.hasData && typeof remote.version === 'number') {
             baseVersion = remote.version;
-            if (!isManual && !options?.force) {
+            if (!isManual && !force && localBlob.version <= remote.version) {
               const guardMessage =
                 '检测到云端已有数据，已暂停自动推送以防覆盖。请先执行“立即拉取”完成对齐后再继续编辑。';
               set({
@@ -954,6 +981,12 @@ export const useHostStore = create<HostState>((set, get) => ({
                 cloudSyncLastAt: remote.updatedAt ?? null,
                 isSyncingCloud: false,
                 cloudSyncError: guardMessage
+              });
+              persistCloudCursor(session, remote.version, remote.updatedAt ?? null);
+              logAppWarn('cloud-sync', '阻止自动推送以避免覆盖云端基线', {
+                source,
+                localVaultVersion: localBlob.version,
+                remoteVersion: remote.version
               });
               return;
             }
@@ -974,6 +1007,13 @@ export const useHostStore = create<HostState>((set, get) => ({
           vaultUpdatedAt: localBlob.updatedAt,
           isSyncingCloud: false,
           cloudSyncError: null
+        });
+        persistCloudCursor(session, pushResult.acceptedVersion, pushResult.updatedAt);
+        logAppInfo('cloud-sync', '云端推送成功', {
+          source,
+          force,
+          baseVersion,
+          acceptedVersion: pushResult.acceptedVersion
         });
       } catch (error) {
         if (error instanceof CloudSyncConflictError) {
@@ -998,10 +1038,15 @@ export const useHostStore = create<HostState>((set, get) => ({
                 isSyncingCloud: false,
                 cloudSyncError: null
               });
+              persistCloudCursor(session, latest.version, latest.updatedAt ?? null);
               if (normalized.discarded > 0) {
                 toast.warning(`云端恢复时忽略了 ${normalized.discarded} 条异常配置。`);
               }
               toast.message('检测到云端有更新，已自动合并至最新版本。');
+              logAppWarn('cloud-sync', '云端推送冲突，已自动拉取最新版本', {
+                source,
+                latestVersion: latest.version
+              });
               return;
             } catch (importError) {
               const fallback = '云端冲突恢复失败，请手动执行拉取。';
@@ -1009,6 +1054,10 @@ export const useHostStore = create<HostState>((set, get) => ({
               set({
                 isSyncingCloud: false,
                 cloudSyncError: message || fallback
+              });
+              logAppError('cloud-sync', '云端冲突恢复失败', {
+                source,
+                message: message || fallback
               });
               return;
             }
@@ -1019,6 +1068,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         set({
           isSyncingCloud: false,
           cloudSyncError: message || fallback
+        });
+        logAppError('cloud-sync', '云端推送失败', {
+          source,
+          message: message || fallback
         });
       }
     });
@@ -1031,11 +1084,37 @@ export const useHostStore = create<HostState>((set, get) => ({
         return;
       }
       const force = options?.force === true;
+      const source = options?.source ?? 'auto';
 
       set({ isSyncingCloud: true, cloudSyncError: null });
       try {
         const remote = await pullCloudSyncBlob(session);
         if (!remote.hasData) {
+          const localVaultVersion = get().vaultVersion ?? 0;
+          if (localVaultVersion > 0) {
+            // Seed an empty cloud with current local encrypted vault.
+            const localBlob = await exportVaultSyncBlob();
+            const seeded = await pushCloudSyncBlob(session, {
+              version: 0,
+              encryptedBlobBase64: localBlob.encryptedBlobBase64
+            });
+            set({
+              cloudSyncSession: session,
+              cloudSyncVersion: seeded.acceptedVersion,
+              cloudSyncLastAt: seeded.updatedAt,
+              vaultVersion: localBlob.version,
+              vaultUpdatedAt: localBlob.updatedAt,
+              isSyncingCloud: false,
+              cloudSyncError: null
+            });
+            persistCloudCursor(session, seeded.acceptedVersion, seeded.updatedAt);
+            logAppInfo('cloud-sync', '云端为空，已用本地金库完成初始化推送', {
+              source,
+              localVaultVersion: localBlob.version,
+              acceptedVersion: seeded.acceptedVersion
+            });
+            return;
+          }
           set({
             cloudSyncSession: session,
             cloudSyncVersion: 0,
@@ -1043,6 +1122,7 @@ export const useHostStore = create<HostState>((set, get) => ({
             isSyncingCloud: false,
             cloudSyncError: null
           });
+          persistCloudCursor(session, 0, remote.updatedAt ?? null);
           return;
         }
 
@@ -1050,14 +1130,47 @@ export const useHostStore = create<HostState>((set, get) => ({
           throw new Error('云端同步数据格式无效，请检查同步服务返回内容。');
         }
 
-        const localCloudVersion = get().cloudSyncVersion ?? 0;
-        if (!force && remote.version <= localCloudVersion) {
+        const localCloudVersion = get().cloudSyncVersion;
+        const localVaultVersion = get().vaultVersion ?? 0;
+        if (!force && localCloudVersion !== null && remote.version <= localCloudVersion) {
           set({
             cloudSyncSession: session,
             cloudSyncVersion: remote.version,
             cloudSyncLastAt: remote.updatedAt ?? get().cloudSyncLastAt,
             isSyncingCloud: false,
             cloudSyncError: null
+          });
+          persistCloudCursor(session, remote.version, remote.updatedAt ?? get().cloudSyncLastAt ?? null);
+          logAppInfo('cloud-sync', '云端拉取检查完成，无需更新', {
+            source,
+            remoteVersion: remote.version,
+            localCloudVersion
+          });
+          return;
+        }
+
+        if (!force && localCloudVersion === null && localVaultVersion > remote.version) {
+          // No known cloud baseline on this device, but local vault appears newer: reconcile by pushing with remote base version.
+          const localBlob = await exportVaultSyncBlob();
+          const reconciled = await pushCloudSyncBlob(session, {
+            version: remote.version,
+            encryptedBlobBase64: localBlob.encryptedBlobBase64
+          });
+          set({
+            cloudSyncSession: session,
+            cloudSyncVersion: reconciled.acceptedVersion,
+            cloudSyncLastAt: reconciled.updatedAt,
+            vaultVersion: localBlob.version,
+            vaultUpdatedAt: localBlob.updatedAt,
+            isSyncingCloud: false,
+            cloudSyncError: null
+          });
+          persistCloudCursor(session, reconciled.acceptedVersion, reconciled.updatedAt);
+          logAppInfo('cloud-sync', '检测到本地版本更高，已完成基线对齐推送', {
+            source,
+            localVaultVersion: localBlob.version,
+            remoteVersion: remote.version,
+            acceptedVersion: reconciled.acceptedVersion
           });
           return;
         }
@@ -1084,16 +1197,71 @@ export const useHostStore = create<HostState>((set, get) => ({
           isSyncingCloud: false,
           cloudSyncError: null
         });
+        persistCloudCursor(session, remote.version, remote.updatedAt ?? get().cloudSyncLastAt ?? null);
         if (normalized.discarded > 0) {
           toast.warning(`云端同步时忽略了 ${normalized.discarded} 条异常配置。`);
         }
         toast.success(`已从私有云同步到 v${imported.version}`);
+        logAppInfo('cloud-sync', '云端拉取并导入成功', {
+          source,
+          force,
+          remoteVersion: remote.version,
+          importedVersion: imported.version
+        });
       } catch (error) {
+        if (error instanceof CloudSyncConflictError) {
+          const latest = error.latest;
+          if (latest?.hasData && latest.encryptedBlobBase64 && typeof latest.version === 'number') {
+            try {
+              const imported = await importVaultSyncBlob(latest.encryptedBlobBase64);
+              const normalized = normalizeVaultSnapshot({
+                hosts: imported.hosts,
+                identities: imported.identities,
+                snippets: imported.snippets
+              });
+              set({
+                cloudSyncSession: session,
+                cloudSyncVersion: latest.version,
+                cloudSyncLastAt: latest.updatedAt ?? null,
+                hosts: normalized.hosts,
+                identities: normalized.identities,
+                snippets: normalized.snippets,
+                vaultVersion: imported.version,
+                vaultUpdatedAt: imported.updatedAt,
+                isSyncingCloud: false,
+                cloudSyncError: null
+              });
+              persistCloudCursor(session, latest.version, latest.updatedAt ?? null);
+              if (normalized.discarded > 0) {
+                toast.warning(`云端同步时忽略了 ${normalized.discarded} 条异常配置。`);
+              }
+              toast.success(`已从私有云同步到 v${imported.version}`);
+              return;
+            } catch (importError) {
+              const fallback = '云端冲突恢复失败，请手动执行拉取。';
+              const message = importError instanceof Error ? importError.message : fallback;
+              set({
+                isSyncingCloud: false,
+                cloudSyncError: message || fallback
+              });
+              logAppError('cloud-sync', '拉取冲突恢复失败', {
+                source,
+                message: message || fallback
+              });
+              return;
+            }
+          }
+        }
         const fallback = '自动拉取云端失败。';
         const message = buildCloudPullErrorMessage(error, fallback);
         set({
           isSyncingCloud: false,
           cloudSyncError: message || fallback
+        });
+        logAppError('cloud-sync', '云端拉取失败', {
+          source,
+          force,
+          message: message || fallback
         });
       }
     });

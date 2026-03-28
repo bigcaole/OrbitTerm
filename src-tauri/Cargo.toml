@@ -1,6 +1,6 @@
 [package]
 name = "orbitterm-backend"
-version = "0.1.24"
+version = "0.1.25"
 description = "OrbitTerm Tauri backend with async SSH"
 authors = ["OrbitTerm Team"]
 license = "MIT"
@@ -23,7 +23,7 @@ sha2 = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ssh-key = { version = "0.6", features = ["std", "ed25519", "rsa", "getrandom"] }
-tauri = { version = "1.6", features = ["dialog-open", "dialog-save", "shell-open", "updater", "process-relaunch"] }
+tauri = { version = "1.6", features = ["dialog-open", "dialog-save", "shell-open", "system-tray", "updater", "process-relaunch"] }
 thiserror = "1.0"
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time", "io-util"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }

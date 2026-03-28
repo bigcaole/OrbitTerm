@@ -11,7 +11,7 @@ import {
 } from '../../services/ssh';
 import { ORBIT_THEME_PRESETS } from '../../theme/orbitTheme';
 import { useHostStore } from '../../store/useHostStore';
-import { useUiSettingsStore } from '../../store/useUiSettingsStore';
+import { useUiSettingsStore, type CloseWindowAction } from '../../store/useUiSettingsStore';
 import { buildHostKey } from '../../utils/hostKey';
 
 interface SettingsDrawerProps {
@@ -25,6 +25,7 @@ interface SettingsDrawerProps {
   activeTerminalSessionId: string | null;
   activeTerminalHostId: string | null;
   activeTerminalTitle: string | null;
+  onOpenCloudAuth: () => void;
 }
 
 export type SettingsCategory = 'profile' | 'settings' | 'files' | 'other';
@@ -89,7 +90,8 @@ export function SettingsDrawer({
   focusSequence,
   activeTerminalSessionId,
   activeTerminalHostId,
-  activeTerminalTitle
+  activeTerminalTitle,
+  onOpenCloudAuth
 }: SettingsDrawerProps): JSX.Element | null {
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
@@ -101,6 +103,7 @@ export function SettingsDrawer({
   const themePresetId = useUiSettingsStore((state) => state.themePresetId);
   const autoLockEnabled = useUiSettingsStore((state) => state.autoLockEnabled);
   const autoLockMinutes = useUiSettingsStore((state) => state.autoLockMinutes);
+  const closeWindowAction = useUiSettingsStore((state) => state.closeWindowAction);
   const setTerminalFontSize = useUiSettingsStore((state) => state.setTerminalFontSize);
   const setTerminalFontFamily = useUiSettingsStore((state) => state.setTerminalFontFamily);
   const setTerminalOpacity = useUiSettingsStore((state) => state.setTerminalOpacity);
@@ -111,6 +114,7 @@ export function SettingsDrawer({
   const setThemePresetId = useUiSettingsStore((state) => state.setThemePresetId);
   const setAutoLockEnabled = useUiSettingsStore((state) => state.setAutoLockEnabled);
   const setAutoLockMinutes = useUiSettingsStore((state) => state.setAutoLockMinutes);
+  const setCloseWindowAction = useUiSettingsStore((state) => state.setCloseWindowAction);
   const cloudSyncSession = useHostStore((state) => state.cloudSyncSession);
   const isSyncingCloud = useHostStore((state) => state.isSyncingCloud);
   const cloudSyncError = useHostStore((state) => state.cloudSyncError);
@@ -119,8 +123,6 @@ export function SettingsDrawer({
   const isSavingVault = useHostStore((state) => state.isSavingVault);
   const addIdentity = useHostStore((state) => state.addIdentity);
   const updateIdentity = useHostStore((state) => state.updateIdentity);
-  const registerCloudAccount = useHostStore((state) => state.registerCloudAccount);
-  const loginCloudAccount = useHostStore((state) => state.loginCloudAccount);
   const logoutCloudAccount = useHostStore((state) => state.logoutCloudAccount);
   const syncPullFromCloud = useHostStore((state) => state.syncPullFromCloud);
   const vaultVersion = useHostStore((state) => state.vaultVersion);
@@ -129,9 +131,6 @@ export function SettingsDrawer({
   const loadCloudDevices = useHostStore((state) => state.loadCloudDevices);
   const revokeCloudDevice = useHostStore((state) => state.revokeCloudDevice);
   const revokeAllCloudDevices = useHostStore((state) => state.revokeAllCloudDevices);
-  const [apiBaseUrl, setApiBaseUrl] = useState<string>(cloudSyncSession?.apiBaseUrl ?? '');
-  const [email, setEmail] = useState<string>(cloudSyncSession?.email ?? '');
-  const [password, setPassword] = useState<string>('');
   const [identityMode, setIdentityMode] = useState<'new' | 'existing'>('new');
   const [selectedIdentityId, setSelectedIdentityId] = useState<string>('');
   const [identityNameInput, setIdentityNameInput] = useState<string>('');
@@ -140,14 +139,6 @@ export function SettingsDrawer({
   const [isGeneratingKey, setIsGeneratingKey] = useState<boolean>(false);
   const [isDeployingKey, setIsDeployingKey] = useState<boolean>(false);
   const [isExportingKey, setIsExportingKey] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (!cloudSyncSession) {
-      return;
-    }
-    setApiBaseUrl(cloudSyncSession.apiBaseUrl);
-    setEmail(cloudSyncSession.email);
-  }, [cloudSyncSession]);
 
   useEffect(() => {
     if (!open || !cloudSyncSession) {
@@ -239,6 +230,16 @@ export function SettingsDrawer({
 
   const authMethodLabel = (method: AuthMethod): string => {
     return method === 'password' ? '密码认证' : '私钥认证';
+  };
+
+  const closeWindowActionLabel = (value: CloseWindowAction): string => {
+    if (value === 'tray') {
+      return '关闭后驻留系统托盘';
+    }
+    if (value === 'exit') {
+      return '关闭后直接退出';
+    }
+    return '每次关闭都询问';
   };
 
   useEffect(() => {
@@ -617,6 +618,27 @@ export function SettingsDrawer({
                 value={autoLockMinutes}
               />
             </div>
+
+            <div className="space-y-1.5 pt-2">
+              <label className="text-xs text-slate-600" htmlFor="close-window-action">
+                点击窗口关闭按钮时
+              </label>
+              <select
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+                id="close-window-action"
+                onChange={(event) => {
+                  setCloseWindowAction(event.target.value as CloseWindowAction);
+                }}
+                value={closeWindowAction}
+              >
+                <option value="ask">每次关闭都询问（推荐）</option>
+                <option value="tray">默认驻留系统托盘</option>
+                <option value="exit">默认直接退出</option>
+              </select>
+              <p className="text-[11px] text-slate-500">
+                当前策略：{closeWindowActionLabel(closeWindowAction)}
+              </p>
+            </div>
             </section>
           )}
 
@@ -805,80 +827,19 @@ export function SettingsDrawer({
           >
             <h3 className="text-sm font-semibold text-slate-800">私有云同步</h3>
             <p className="text-xs text-slate-700">
-              使用账号登录后，主机金库会在本地变更后自动上传，并在登录时自动拉取云端新版本（仅支持 HTTPS）。
+              登录入口已迁移到“解锁后弹层”。这里仅展示同步状态、手动拉取与退出账号。
             </p>
-            <label className="block text-xs text-slate-600" htmlFor="sync-api-url">
-              同步服务地址（HTTPS）
-            </label>
-            <input
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
-              id="sync-api-url"
-              onChange={(event) => setApiBaseUrl(event.target.value)}
-              placeholder="https://sync.orbitterm.example"
-              type="url"
-              value={apiBaseUrl}
-            />
-
-            <label className="block text-xs text-slate-600" htmlFor="sync-email">
-              邮箱账号
-            </label>
-            <input
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
-              id="sync-email"
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="user@example.com"
-              type="email"
-              value={email}
-            />
-
-            <label className="block text-xs text-slate-600" htmlFor="sync-password">
-              账号密码
-            </label>
-            <input
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
-              id="sync-password"
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="至少 8 位"
-              type="password"
-              value={password}
-            />
 
             <div className="flex flex-wrap gap-2">
               <button
                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={isSyncingCloud}
                 onClick={() => {
-                  void registerCloudAccount(apiBaseUrl, email, password)
-                    .catch((error) => {
-                      const fallback = '注册失败，请检查输入后重试。';
-                      const message = error instanceof Error ? error.message : fallback;
-                      toast.error(message || fallback);
-                    })
-                    .finally(() => {
-                      setPassword('');
-                    });
+                  onOpenCloudAuth();
                 }}
                 type="button"
               >
-                {isSyncingCloud ? '处理中...' : '注册账号'}
-              </button>
-              <button
-                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={isSyncingCloud}
-                onClick={() => {
-                  void loginCloudAccount(apiBaseUrl, email, password)
-                    .catch((error) => {
-                      const fallback = '登录失败，请检查输入后重试。';
-                      const message = error instanceof Error ? error.message : fallback;
-                      toast.error(message || fallback);
-                    })
-                    .finally(() => {
-                      setPassword('');
-                    });
-                }}
-                type="button"
-              >
-                {isSyncingCloud ? '处理中...' : '登录并同步'}
+                {cloudSyncSession ? '切换账号' : '连接账号'}
               </button>
               <button
                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -908,7 +869,6 @@ export function SettingsDrawer({
                 disabled={isSyncingCloud || !cloudSyncSession}
                 onClick={() => {
                   logoutCloudAccount();
-                  setPassword('');
                   toast.message('已断开私有云同步账号');
                 }}
                 type="button"
@@ -918,12 +878,13 @@ export function SettingsDrawer({
             </div>
 
             {cloudSyncSession ? (
-              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                已登录：{cloudSyncSession.email}（本地金库版本：v{vaultVersion ?? '-'}）
-              </p>
+              <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                <p>已登录：{cloudSyncSession.email}（本地金库版本：v{vaultVersion ?? '-'}）</p>
+                <p className="text-emerald-800/90">同步服务：{cloudSyncSession.apiBaseUrl}</p>
+              </div>
             ) : (
               <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                当前未登录私有云账号，数据仅保存在本机加密金库。
+                当前未登录私有云账号，数据仅保存在本机加密金库。你也可以先“跳过”，后续随时再登录同步。
               </p>
             )}
             {cloudSyncError ? (

@@ -24,7 +24,9 @@ use models::{
     UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
 };
 use ssh::SshSessionRegistry;
-use tauri::{AppHandle, State};
+use tauri::{
+    AppHandle, CustomMenuItem, Manager, State, SystemTray, SystemTrayEvent, SystemTrayMenu,
+};
 use vault::VaultSessionState;
 
 #[tauri::command]
@@ -269,10 +271,39 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn main() {
+    let tray_menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("show_main_window", "显示主窗口"))
+        .add_item(CustomMenuItem::new("quit_app", "退出 OrbitTerm"));
+    let system_tray = SystemTray::new().with_menu(tray_menu);
+
     let app = tauri::Builder::default()
         .manage(SshSessionRegistry::default())
         .manage(VaultSessionState::default())
+        .system_tray(system_tray)
+        .on_system_tray_event(|app, event| match event {
+            SystemTrayEvent::LeftClick { .. } => {
+                show_main_window(app);
+            }
+            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                "show_main_window" => {
+                    show_main_window(app);
+                }
+                "quit_app" => {
+                    app.exit(0);
+                }
+                _ => {}
+            },
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             ssh_connect,
             ssh_write,
