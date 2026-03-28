@@ -12,24 +12,31 @@ import type { HostConfig, IdentityConfig, Snippet } from '../types/host';
 import {
   clearVaultSession,
   exportVaultSyncBlob,
+  importEncryptedBackup,
   importVaultSyncBlob,
   saveVault,
   unlockAndLoad
 } from '../services/vault';
 import {
+  activateCloudLicense,
   CloudSyncConflictError,
   clearCloudSyncSession,
+  fetchCloudSyncPolicy,
+  getCloudLicenseStatus,
   listCloudDevices,
   loginCloudSync,
   logoutAllCloudDevices,
   logoutCloudDevice,
   pullCloudSyncBlob,
   pushCloudSyncBlob,
+  readCloudSyncPolicy,
   readCloudSyncSession,
   readCloudSyncCursor,
   registerCloudSync,
   writeCloudSyncCursor,
+  type CloudLicenseStatus,
   type CloudDeviceItem,
+  type CloudSyncPolicy,
   type CloudSyncSession
 } from '../services/cloudSync';
 import { type ProxyJumpHop, sshConnect, sshDisconnect } from '../services/ssh';
@@ -83,6 +90,9 @@ interface HostState {
   isSavingVault: boolean;
   saveError: string | null;
   cloudSyncSession: CloudSyncSession | null;
+  cloudSyncPolicy: CloudSyncPolicy | null;
+  cloudLicenseStatus: CloudLicenseStatus | null;
+  isActivatingCloudLicense: boolean;
   cloudSyncVersion: number | null;
   cloudSyncLastAt: string | null;
   cloudDevices: CloudDeviceItem[];
@@ -103,11 +113,14 @@ interface HostState {
   registerCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
   loginCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
   logoutCloudAccount: () => void;
+  refreshCloudLicenseStatus: () => Promise<void>;
+  activateCloudLicenseCode: (code: string) => Promise<void>;
   loadCloudDevices: () => Promise<void>;
   revokeCloudDevice: (deviceId: string) => Promise<void>;
   revokeAllCloudDevices: () => Promise<void>;
   syncPushToCloud: (options?: CloudSyncPushOptions) => Promise<void>;
   syncPullFromCloud: (options?: CloudSyncPullOptions) => Promise<void>;
+  importLocalBackup: (sourcePath: string) => Promise<void>;
   setHosts: (hosts: HostConfig[]) => void;
   setIdentities: (identities: IdentityConfig[]) => void;
   addIdentity: (payload: {
@@ -595,6 +608,7 @@ const createSnippetId = (): string => {
 };
 
 const initialCloudSyncSession = readCloudSyncSession();
+const initialCloudSyncPolicy = readCloudSyncPolicy();
 const CLOUD_PUSH_DEBOUNCE_MS = 800;
 
 let cloudSyncQueue: Promise<void> = Promise.resolve();
@@ -737,6 +751,9 @@ export const useHostStore = create<HostState>((set, get) => ({
   isSavingVault: false,
   saveError: null,
   cloudSyncSession: initialCloudSyncSession,
+  cloudSyncPolicy: initialCloudSyncPolicy,
+  cloudLicenseStatus: null,
+  isActivatingCloudLicense: false,
   cloudSyncVersion: null,
   cloudSyncLastAt: null,
   cloudDevices: [],
@@ -767,6 +784,7 @@ export const useHostStore = create<HostState>((set, get) => ({
         snippets: response.snippets
       });
       const cloudSession = readCloudSyncSession();
+      const cloudPolicy = readCloudSyncPolicy();
       const cloudCursor = cloudSession ? readCloudSyncCursor(cloudSession) : null;
       set({
         hosts: normalized.hosts,
@@ -782,6 +800,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         terminalError: null,
         saveError: null,
         cloudSyncSession: cloudSession,
+        cloudSyncPolicy: cloudPolicy,
+        cloudLicenseStatus: null,
         cloudSyncVersion: cloudCursor?.version ?? null,
         cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
@@ -795,7 +815,8 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (cloudSession) {
         void Promise.all([
           get().syncPullFromCloud({ source: 'auto' }),
-          get().loadCloudDevices()
+          get().loadCloudDevices(),
+          get().refreshCloudLicenseStatus()
         ]);
       }
     } catch (error) {
@@ -808,6 +829,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         snippets: [],
         vaultVersion: null,
         vaultUpdatedAt: null,
+        cloudSyncPolicy: readCloudSyncPolicy(),
+        cloudLicenseStatus: null,
         cloudSyncVersion: null,
         cloudSyncLastAt: null,
         cloudDevices: [],
@@ -842,6 +865,7 @@ export const useHostStore = create<HostState>((set, get) => ({
       snippets: [],
       vaultVersion: null,
       vaultUpdatedAt: null,
+      cloudLicenseStatus: null,
       cloudSyncVersion: null,
       cloudSyncLastAt: null,
       cloudDevices: [],
@@ -862,9 +886,12 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isSyncingCloud: true, cloudSyncError: null });
     try {
       const session = await registerCloudSync(apiBaseUrl, email, password);
+      const policy = readCloudSyncPolicy();
       const cloudCursor = readCloudSyncCursor(session);
       set({
         cloudSyncSession: session,
+        cloudSyncPolicy: policy,
+        cloudLicenseStatus: null,
         cloudSyncVersion: cloudCursor?.version ?? null,
         cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
@@ -875,7 +902,8 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (get().appView === 'dashboard') {
         await Promise.all([
           get().syncPullFromCloud({ source: 'auto' }),
-          get().loadCloudDevices()
+          get().loadCloudDevices(),
+          get().refreshCloudLicenseStatus()
         ]);
       }
       toast.success('私有云账号注册成功');
@@ -893,9 +921,12 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({ isSyncingCloud: true, cloudSyncError: null });
     try {
       const session = await loginCloudSync(apiBaseUrl, email, password);
+      const policy = readCloudSyncPolicy();
       const cloudCursor = readCloudSyncCursor(session);
       set({
         cloudSyncSession: session,
+        cloudSyncPolicy: policy,
+        cloudLicenseStatus: null,
         cloudSyncVersion: cloudCursor?.version ?? null,
         cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
@@ -906,7 +937,8 @@ export const useHostStore = create<HostState>((set, get) => ({
       if (get().appView === 'dashboard') {
         await Promise.all([
           get().syncPullFromCloud({ source: 'auto' }),
-          get().loadCloudDevices()
+          get().loadCloudDevices(),
+          get().refreshCloudLicenseStatus()
         ]);
       }
       toast.success('私有云同步已连接');
@@ -924,12 +956,75 @@ export const useHostStore = create<HostState>((set, get) => ({
     clearCloudSyncSession();
     set({
       cloudSyncSession: null,
+      cloudLicenseStatus: null,
+      isActivatingCloudLicense: false,
       cloudSyncVersion: null,
       cloudSyncLastAt: null,
       cloudDevices: [],
       isLoadingCloudDevices: false,
       cloudSyncError: null
     });
+  },
+  refreshCloudLicenseStatus: async () => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      set({ cloudLicenseStatus: null });
+      return;
+    }
+
+    try {
+      const [status, policy] = await Promise.all([
+        getCloudLicenseStatus(session),
+        fetchCloudSyncPolicy(session.apiBaseUrl).catch(() => readCloudSyncPolicy())
+      ]);
+      set({
+        cloudSyncSession: session,
+        cloudSyncPolicy: policy ?? state.cloudSyncPolicy,
+        cloudLicenseStatus: status,
+        cloudSyncError: null
+      });
+    } catch (error) {
+      const fallback = '读取授权状态失败，请稍后重试。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        cloudLicenseStatus: null,
+        cloudSyncError: message || fallback
+      });
+    }
+  },
+  activateCloudLicenseCode: async (code) => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      throw new Error('请先登录同步账号。');
+    }
+    const normalizedCode = code.trim();
+    if (!normalizedCode) {
+      throw new Error('请输入激活码。');
+    }
+
+    set({
+      isActivatingCloudLicense: true,
+      cloudSyncError: null
+    });
+    try {
+      const result = await activateCloudLicense(session, normalizedCode);
+      set({
+        cloudLicenseStatus: result.status,
+        isActivatingCloudLicense: false,
+        cloudSyncError: null
+      });
+      toast.success(result.message || '激活成功，同步服务已开通。');
+    } catch (error) {
+      const fallback = '激活失败，请稍后重试。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        isActivatingCloudLicense: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
   },
   loadCloudDevices: async () => {
     const state = get();
@@ -1036,6 +1131,13 @@ export const useHostStore = create<HostState>((set, get) => ({
       const state = get();
       const session = state.cloudSyncSession ?? readCloudSyncSession();
       if (!session || state.appView !== 'dashboard') {
+        return;
+      }
+      if (state.cloudLicenseStatus && !state.cloudLicenseStatus.active) {
+        set({
+          cloudSyncError: '当前账号未激活同步服务，请先输入激活码。',
+          isSyncingCloud: false
+        });
         return;
       }
       const source = options?.source ?? 'auto';
@@ -1159,6 +1261,13 @@ export const useHostStore = create<HostState>((set, get) => ({
       const state = get();
       const session = state.cloudSyncSession ?? readCloudSyncSession();
       if (!session || state.appView !== 'dashboard') {
+        return;
+      }
+      if (state.cloudLicenseStatus && !state.cloudLicenseStatus.active) {
+        set({
+          cloudSyncError: '当前账号未激活同步服务，请先输入激活码。',
+          isSyncingCloud: false
+        });
         return;
       }
       const force = options?.force === true;
@@ -1343,6 +1452,51 @@ export const useHostStore = create<HostState>((set, get) => ({
         });
       }
     });
+  },
+  importLocalBackup: async (sourcePath) => {
+    const normalizedPath = sourcePath.trim();
+    if (!normalizedPath) {
+      throw new Error('请选择要导入的备份文件。');
+    }
+
+    set({ isSavingVault: true, saveError: null });
+    try {
+      const imported = await importEncryptedBackup(normalizedPath);
+      const normalized = normalizeVaultSnapshot({
+        hosts: imported.hosts,
+        identities: imported.identities,
+        snippets: imported.snippets
+      });
+      set({
+        hosts: normalized.hosts,
+        identities: normalized.identities,
+        snippets: normalized.snippets,
+        vaultVersion: imported.version,
+        vaultUpdatedAt: imported.updatedAt,
+        isSavingVault: false,
+        saveError: null
+      });
+      if (normalized.discarded > 0) {
+        toast.warning(`恢复备份时忽略了 ${normalized.discarded} 条异常配置。`);
+      }
+      logAppInfo('vault-backup', '本地备份导入成功', {
+        path: normalizedPath,
+        version: imported.version,
+        discarded: normalized.discarded
+      });
+    } catch (error) {
+      const fallback = '导入加密备份失败，请检查文件和主密码。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        isSavingVault: false,
+        saveError: message || fallback
+      });
+      logAppError('vault-backup', '本地备份导入失败', {
+        path: normalizedPath,
+        message: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
   },
   setHosts: (hosts) => {
     const normalized = normalizeVaultSnapshot({

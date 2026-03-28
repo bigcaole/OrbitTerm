@@ -14,14 +14,14 @@ use error::SshBackendError;
 use models::{
     AiExplainSshErrorRequest, AiExplainSshErrorResponse, AiTranslateRequest, AiTranslateResponse,
     ExportEncryptedBackupRequest, ExportEncryptedBackupResponse, HealthCheckResponse,
-    SaveVaultRequest, SaveVaultResponse, SftpDownloadRequest, SftpLsRequest, SftpLsResponse,
-    SftpMkdirRequest, SftpReadTextRequest, SftpReadTextResponse, SftpRenameRequest, SftpRmRequest,
-    SftpTransferResponse, SftpUploadRequest, SshConnectRequest, SshConnectedResponse,
-    SshDeployPublicKeyRequest, SshDerivePublicKeyRequest, SshDerivePublicKeyResponse,
-    SshDisconnectRequest, SshExportPrivateKeyRequest, SshExportPrivateKeyResponse,
-    SshGenerateKeypairRequest, SshGenerateKeypairResponse, SshPulseActivityRequest,
-    SshResizeRequest, SshWriteRequest, UnlockAndLoadRequest, UnlockAndLoadResponse,
-    VaultSyncExportResponse, VaultSyncImportRequest,
+    ImportEncryptedBackupRequest, SaveVaultRequest, SaveVaultResponse, SftpDownloadRequest,
+    SftpLsRequest, SftpLsResponse, SftpMkdirRequest, SftpReadTextRequest, SftpReadTextResponse,
+    SftpRenameRequest, SftpRmRequest, SftpTransferResponse, SftpUploadRequest, SshConnectRequest,
+    SshConnectedResponse, SshDeployPublicKeyRequest, SshDerivePublicKeyRequest,
+    SshDerivePublicKeyResponse, SshDisconnectRequest, SshExportPrivateKeyRequest,
+    SshExportPrivateKeyResponse, SshGenerateKeypairRequest, SshGenerateKeypairResponse,
+    SshPulseActivityRequest, SshResizeRequest, SshWriteRequest, UnlockAndLoadRequest,
+    UnlockAndLoadResponse, VaultSyncExportResponse, VaultSyncImportRequest,
 };
 use ssh::SshSessionRegistry;
 use tauri::{
@@ -241,6 +241,15 @@ async fn export_encrypted_backup(
 }
 
 #[tauri::command]
+async fn import_encrypted_backup(
+    app: AppHandle,
+    state: State<'_, VaultSessionState>,
+    request: ImportEncryptedBackupRequest,
+) -> Result<UnlockAndLoadResponse, String> {
+    vault::import_encrypted_backup(app, state, request).await
+}
+
+#[tauri::command]
 async fn vault_export_sync_blob(app: AppHandle) -> Result<VaultSyncExportResponse, String> {
     vault::export_sync_blob(app).await
 }
@@ -324,6 +333,7 @@ fn main() {
             unlock_and_load,
             save_vault,
             export_encrypted_backup,
+            import_encrypted_backup,
             vault_export_sync_blob,
             vault_import_sync_blob,
             vault_clear_session,

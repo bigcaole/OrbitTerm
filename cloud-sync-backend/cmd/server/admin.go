@@ -59,20 +59,23 @@ type adminDeviceRow struct {
 }
 
 type adminPageData struct {
-	Authenticated      bool
-	Notice             string
-	Error              string
-	AdminUsername      string
-	Admin2FAEnabled    bool
-	Runtime            runtimeSettings
-	Metrics            adminDashboardMetrics
-	Users              []adminUserRow
-	Devices            []adminDeviceRow
-	AllowInsecureHTTP  bool
-	CORSAllowOrigins   string
-	MaxRequestBodySize int64
-	AuthRateLimit      int
-	SyncRateLimit      int
+	Authenticated            bool
+	Notice                   string
+	Error                    string
+	AdminUsername            string
+	Admin2FAEnabled          bool
+	Runtime                  runtimeSettings
+	Metrics                  adminDashboardMetrics
+	Users                    []adminUserRow
+	Devices                  []adminDeviceRow
+	AllowInsecureHTTP        bool
+	CORSAllowOrigins         string
+	MaxRequestBodySize       int64
+	AuthRateLimit            int
+	SyncRateLimit            int
+	ClientDefaultSyncDomain  string
+	ClientSyncDomainLocked   bool
+	ClientHideSyncDomainEdit bool
 }
 
 var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctype html>
@@ -239,6 +242,10 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
       <div>
         <h1>OrbitTerm 项目管理员控制台</h1>
         <p class="muted">登录账号：{{ .AdminUsername }} ｜ 服务时间(UTC)：{{ .Metrics.CurrentServerUTC }}</p>
+        <p class="muted" style="margin-top:4px;">
+          <a href="/admin/licenses" style="color:#b8d3ff;">激活码管理</a> ｜ 
+          <a href="/admin/backup" style="color:#b8d3ff;">备份与恢复</a>
+        </p>
       </div>
       <form method="post" action="/admin/logout">
         <button class="btn btn-danger" type="submit">退出登录</button>
@@ -279,6 +286,17 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
           <label class="row">
             <span>ALLOW_INSECURE_HTTP（仅本地测试建议开启）</span>
             <input type="checkbox" name="allow_insecure_http" value="true" {{ if .AllowInsecureHTTP }}checked{{ end }} />
+          </label>
+          <label>客户端默认同步域名
+            <input type="text" name="client_default_sync_domain" value="{{ .ClientDefaultSyncDomain }}" placeholder="https://sync.example.com" />
+          </label>
+          <label class="row">
+            <span>锁定客户端同步域名（客户端不可改）</span>
+            <input type="checkbox" name="client_sync_domain_locked" value="true" {{ if .ClientSyncDomainLocked }}checked{{ end }} />
+          </label>
+          <label class="row">
+            <span>隐藏客户端同步域名输入框</span>
+            <input type="checkbox" name="client_hide_sync_domain_edit" value="true" {{ if .ClientHideSyncDomainEdit }}checked{{ end }} />
           </label>
           <button class="btn" type="submit">保存并应用</button>
         </form>
@@ -383,6 +401,8 @@ func (a *app) registerAdminRoutes(router *gin.Engine) {
 	if !a.cfg.AdminWebEnabled {
 		return
 	}
+	router.GET("/setup", a.handleSetupPage)
+	router.POST("/setup", a.handleSetupSubmit)
 
 	router.GET("/admin", a.handleAdminPage)
 	router.POST(
@@ -397,6 +417,12 @@ func (a *app) registerAdminRoutes(router *gin.Engine) {
 	adminGroup.POST("/settings", a.handleAdminUpdateSettings)
 	adminGroup.POST("/device/revoke", a.handleAdminRevokeDevice)
 	adminGroup.POST("/user/revoke-all", a.handleAdminRevokeAllUserDevices)
+	adminGroup.GET("/licenses", a.handleAdminLicensePage)
+	adminGroup.POST("/licenses/generate", a.handleAdminGenerateLicenseCodes)
+	adminGroup.POST("/licenses/disable", a.handleAdminDisableLicenseCode)
+	adminGroup.GET("/backup", a.handleAdminBackupPage)
+	adminGroup.GET("/backup/export", a.handleAdminBackupExport)
+	adminGroup.POST("/backup/import", a.handleAdminBackupImport)
 }
 
 func (a *app) buildAdminSessionToken() (string, error) {
@@ -449,6 +475,11 @@ func (a *app) clearAdminSessionCookie(c *gin.Context) {
 
 func (a *app) adminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !a.isSetupComplete() {
+			c.Redirect(http.StatusFound, "/setup")
+			c.Abort()
+			return
+		}
 		rawCookie, err := c.Cookie(adminSessionCookieName)
 		if err != nil || strings.TrimSpace(rawCookie) == "" {
 			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("请先登录管理员账号。"))
@@ -470,6 +501,10 @@ func (a *app) adminAuthMiddleware() gin.HandlerFunc {
 }
 
 func (a *app) handleAdminPage(c *gin.Context) {
+	if !a.isSetupComplete() {
+		c.Redirect(http.StatusFound, "/setup")
+		return
+	}
 	notice := strings.TrimSpace(c.Query("notice"))
 	errorMessage := strings.TrimSpace(c.Query("error"))
 	cookieToken, cookieErr := c.Cookie(adminSessionCookieName)
@@ -518,21 +553,31 @@ func (a *app) handleAdminPage(c *gin.Context) {
 	}
 
 	currentRuntime := a.getRuntimeSettings()
+	adminSettings, settingsErr := a.readAdminSettings(c.Request.Context())
+	if settingsErr != nil {
+		errorMessage = "读取系统配置失败，请稍后刷新。"
+	}
+	clientDefaultSyncDomain := strings.TrimSpace(adminSettings[settingClientDefaultSyncDomain])
+	clientSyncDomainLocked := parseBoolString(adminSettings[settingClientSyncDomainLocked], false)
+	clientHideSyncDomainEdit := parseBoolString(adminSettings[settingClientHideSyncDomainEdit], false)
 	a.renderAdminPage(c, adminPageData{
-		Authenticated:      true,
-		Notice:             notice,
-		Error:              strings.TrimSpace(errorMessage),
-		AdminUsername:      a.cfg.AdminUsername,
-		Admin2FAEnabled:    a.cfg.Admin2FAEnabled,
-		Runtime:            currentRuntime,
-		Metrics:            metrics,
-		Users:              users,
-		Devices:            devices,
-		AllowInsecureHTTP:  currentRuntime.AllowInsecureHTTP,
-		CORSAllowOrigins:   currentRuntime.CORSAllowOrigins,
-		MaxRequestBodySize: currentRuntime.MaxRequestBodyBytes,
-		AuthRateLimit:      currentRuntime.AuthRateLimitPerMin,
-		SyncRateLimit:      currentRuntime.SyncRateLimitPerMin,
+		Authenticated:            true,
+		Notice:                   notice,
+		Error:                    strings.TrimSpace(errorMessage),
+		AdminUsername:            a.cfg.AdminUsername,
+		Admin2FAEnabled:          a.cfg.Admin2FAEnabled,
+		Runtime:                  currentRuntime,
+		Metrics:                  metrics,
+		Users:                    users,
+		Devices:                  devices,
+		AllowInsecureHTTP:        currentRuntime.AllowInsecureHTTP,
+		CORSAllowOrigins:         currentRuntime.CORSAllowOrigins,
+		MaxRequestBodySize:       currentRuntime.MaxRequestBodyBytes,
+		AuthRateLimit:            currentRuntime.AuthRateLimitPerMin,
+		SyncRateLimit:            currentRuntime.SyncRateLimitPerMin,
+		ClientDefaultSyncDomain:  clientDefaultSyncDomain,
+		ClientSyncDomainLocked:   clientSyncDomainLocked,
+		ClientHideSyncDomainEdit: clientHideSyncDomainEdit,
 	})
 }
 
@@ -548,6 +593,10 @@ func (a *app) renderAdminPage(c *gin.Context, payload adminPageData) {
 func (a *app) handleAdminLogin(c *gin.Context) {
 	if !a.cfg.AdminWebEnabled {
 		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if !a.isSetupComplete() {
+		c.Redirect(http.StatusFound, "/setup")
 		return
 	}
 
@@ -614,6 +663,10 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 		return
 	}
 
+	clientDefaultSyncDomain := strings.TrimSpace(c.PostForm("client_default_sync_domain"))
+	clientSyncDomainLocked := strings.TrimSpace(c.PostForm("client_sync_domain_locked")) == "true"
+	clientHideSyncDomainEdit := strings.TrimSpace(c.PostForm("client_hide_sync_domain_edit")) == "true"
+
 	next := runtimeSettings{
 		AllowInsecureHTTP:   nextAllowInsecure,
 		CORSAllowOrigins:    nextCORS,
@@ -640,6 +693,9 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 		{key: "max_request_body_bytes", value: strconv.FormatInt(next.MaxRequestBodyBytes, 10)},
 		{key: "auth_rate_limit_per_min", value: strconv.Itoa(next.AuthRateLimitPerMin)},
 		{key: "sync_rate_limit_per_min", value: strconv.Itoa(next.SyncRateLimitPerMin)},
+		{key: settingClientDefaultSyncDomain, value: clientDefaultSyncDomain},
+		{key: settingClientSyncDomainLocked, value: strconv.FormatBool(clientSyncDomainLocked)},
+		{key: settingClientHideSyncDomainEdit, value: strconv.FormatBool(clientHideSyncDomainEdit)},
 	}
 	for _, item := range upsertSettings {
 		if _, execErr := tx.ExecContext(

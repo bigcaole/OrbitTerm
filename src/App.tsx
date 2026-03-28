@@ -8,7 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent
 } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { save as saveDialog } from '@tauri-apps/api/dialog';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
 import { appWindow } from '@tauri-apps/api/window';
 import { Toaster, toast } from 'sonner';
 import { Step1 } from './components/wizard/Step1';
@@ -54,6 +54,7 @@ import {
 } from './services/updater';
 import { resolveThemePreset } from './theme/orbitTheme';
 import { buildHostKey } from './utils/hostKey';
+import { useI18n } from './i18n/useI18n';
 
 type DashboardSection = 'hosts' | 'terminal';
 
@@ -431,6 +432,7 @@ const PALETTE_SETTINGS_ENTRIES: ReadonlyArray<PaletteSettingEntry> = [
 ];
 
 function App(): JSX.Element {
+  const { locale } = useI18n();
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState<boolean>(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState<string>('');
@@ -501,6 +503,7 @@ function App(): JSX.Element {
   const addSnippet = useHostStore((state) => state.addSnippet);
   const updateSnippet = useHostStore((state) => state.updateSnippet);
   const deleteSnippet = useHostStore((state) => state.deleteSnippet);
+  const importLocalBackup = useHostStore((state) => state.importLocalBackup);
 
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
@@ -522,6 +525,12 @@ function App(): JSX.Element {
   const clearAppLogs = useAppLogStore((state) => state.clearLogs);
 
   const activeThemePreset = useMemo(() => resolveThemePreset(themePresetId), [themePresetId]);
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = locale;
+    }
+  }, [locale]);
+
   const syncLastText = useMemo(() => {
     if (!cloudSyncLastAt) {
       return '未完成云同步';
@@ -530,7 +539,7 @@ function App(): JSX.Element {
     if (Number.isNaN(date.getTime())) {
       return '未完成云同步';
     }
-    return date.toLocaleString('zh-CN', {
+    return date.toLocaleString(locale, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -539,7 +548,7 @@ function App(): JSX.Element {
       second: '2-digit',
       hour12: false
     });
-  }, [cloudSyncLastAt]);
+  }, [cloudSyncLastAt, locale]);
   const syncIndicatorTone = useMemo(() => {
     if (!cloudSyncSession) {
       return 'idle';
@@ -1745,6 +1754,39 @@ function App(): JSX.Element {
       });
     } catch (error) {
       const fallback = '导出加密备份失败，请检查目标目录权限。';
+      const message = error instanceof Error ? error.message : fallback;
+      toast.error(message || fallback);
+    }
+  };
+
+  const handleImportEncryptedBackup = async (): Promise<void> => {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [
+        {
+          name: 'OrbitTerm Backup',
+          extensions: ['bin', 'json']
+        }
+      ]
+    });
+    if (!selected || Array.isArray(selected)) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      '导入备份会覆盖当前本地金库内容（主机/身份/指令库），确定继续吗？'
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await importLocalBackup(selected);
+      toast.success('备份导入成功', {
+        description: `已恢复文件：${selected}`
+      });
+    } catch (error) {
+      const fallback = '导入加密备份失败，请检查文件和当前金库主密码。';
       const message = error instanceof Error ? error.message : fallback;
       toast.error(message || fallback);
     }
@@ -3141,6 +3183,7 @@ function App(): JSX.Element {
           setIsInspectorOpen(false);
         }}
         onExportBackup={handleExportEncryptedBackup}
+        onImportBackup={handleImportEncryptedBackup}
         onRefreshHealth={async () => {
           await performHealthCheck(true);
         }}

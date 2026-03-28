@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import {
+  fetchCloudSyncPolicy,
+  readCloudSyncPolicy,
+  type CloudSyncPolicy
+} from '../../services/cloudSync';
 import { useHostStore } from '../../store/useHostStore';
+import { useI18n } from '../../i18n/useI18n';
 
 interface CloudAuthModalProps {
   open: boolean;
@@ -40,6 +46,7 @@ const writeAuthHints = (hints: CloudAuthHints): void => {
 };
 
 export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps): JSX.Element | null {
+  const { t } = useI18n();
   const isSyncingCloud = useHostStore((state) => state.isSyncingCloud);
   const cloudSyncError = useHostStore((state) => state.cloudSyncError);
   const registerCloudAccount = useHostStore((state) => state.registerCloudAccount);
@@ -48,36 +55,72 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [policy, setPolicy] = useState<CloudSyncPolicy | null>(null);
 
   useEffect(() => {
     if (!open) {
       return;
     }
     const hints = readAuthHints();
+    const cachedPolicy = readCloudSyncPolicy();
+    setPolicy(cachedPolicy);
     setApiBaseUrl(hints.apiBaseUrl);
     setEmail(hints.email);
     setPassword('');
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !policy?.lockSyncDomain || !policy.defaultSyncDomain) {
+      return;
+    }
+    setApiBaseUrl(policy.defaultSyncDomain);
+  }, [open, policy]);
+
   const normalizedHints = useMemo<CloudAuthHints>(() => {
+    const effectiveApiBaseUrl =
+      policy?.lockSyncDomain && policy.defaultSyncDomain
+        ? policy.defaultSyncDomain
+        : apiBaseUrl.trim();
     return {
-      apiBaseUrl: apiBaseUrl.trim(),
+      apiBaseUrl: effectiveApiBaseUrl,
       email: email.trim()
     };
-  }, [apiBaseUrl, email]);
+  }, [apiBaseUrl, email, policy]);
+
+  const refreshPolicyByEndpoint = async (endpoint: string): Promise<CloudSyncPolicy | null> => {
+    if (!endpoint.trim()) {
+      return policy;
+    }
+    try {
+      const nextPolicy = await fetchCloudSyncPolicy(endpoint);
+      setPolicy(nextPolicy);
+      return nextPolicy;
+    } catch (_error) {
+      return policy;
+    }
+  };
 
   const handleRegister = async (): Promise<void> => {
     if (!normalizedHints.apiBaseUrl || !normalizedHints.email || !password.trim()) {
-      toast.error('请完整填写同步地址、邮箱与密码。');
+      toast.error(t('cloud.errorFillRequired'));
       return;
     }
+    const latestPolicy = await refreshPolicyByEndpoint(normalizedHints.apiBaseUrl);
+    if (latestPolicy?.setupRequired) {
+      toast.error(t('cloud.errorSetupRequired'));
+      return;
+    }
+    const effectiveApi =
+      latestPolicy?.lockSyncDomain && latestPolicy.defaultSyncDomain
+        ? latestPolicy.defaultSyncDomain
+        : normalizedHints.apiBaseUrl;
     try {
-      await registerCloudAccount(normalizedHints.apiBaseUrl, normalizedHints.email, password);
-      writeAuthHints(normalizedHints);
+      await registerCloudAccount(effectiveApi, normalizedHints.email, password);
+      writeAuthHints({ ...normalizedHints, apiBaseUrl: effectiveApi });
       setPassword('');
       onSuccess();
     } catch (error) {
-      const fallback = '注册失败，请检查输入后重试。';
+      const fallback = t('cloud.errorRegister');
       const message = error instanceof Error ? error.message : fallback;
       toast.error(message || fallback);
     }
@@ -85,16 +128,25 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
 
   const handleLogin = async (): Promise<void> => {
     if (!normalizedHints.apiBaseUrl || !normalizedHints.email || !password.trim()) {
-      toast.error('请完整填写同步地址、邮箱与密码。');
+      toast.error(t('cloud.errorFillRequired'));
       return;
     }
+    const latestPolicy = await refreshPolicyByEndpoint(normalizedHints.apiBaseUrl);
+    if (latestPolicy?.setupRequired) {
+      toast.error(t('cloud.errorSetupRequired'));
+      return;
+    }
+    const effectiveApi =
+      latestPolicy?.lockSyncDomain && latestPolicy.defaultSyncDomain
+        ? latestPolicy.defaultSyncDomain
+        : normalizedHints.apiBaseUrl;
     try {
-      await loginCloudAccount(normalizedHints.apiBaseUrl, normalizedHints.email, password);
-      writeAuthHints(normalizedHints);
+      await loginCloudAccount(effectiveApi, normalizedHints.email, password);
+      writeAuthHints({ ...normalizedHints, apiBaseUrl: effectiveApi });
       setPassword('');
       onSuccess();
     } catch (error) {
-      const fallback = '登录失败，请检查输入后重试。';
+      const fallback = t('cloud.errorLogin');
       const message = error instanceof Error ? error.message : fallback;
       toast.error(message || fallback);
     }
@@ -107,30 +159,53 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
   return (
     <div className="fixed inset-0 z-[136] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm">
       <div className="w-full max-w-lg rounded-3xl border border-white/45 bg-[#f1f7ff]/95 p-6 shadow-2xl backdrop-blur-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">私有云同步</p>
-        <h2 className="mt-2 text-xl font-semibold text-slate-900">登录 / 注册同步账号</h2>
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t('cloud.tag')}</p>
+        <h2 className="mt-2 text-xl font-semibold text-slate-900">{t('cloud.title')}</h2>
         <p className="mt-1 text-sm text-slate-600">
-          金库解锁成功后可立即连接私有云，实现 Windows 与 macOS 多端同步。
+          {t('cloud.desc')}
         </p>
+        {policy?.requireActivation ? (
+          <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            {t('cloud.requireActivation')}
+          </p>
+        ) : null}
 
         <div className="mt-4 space-y-3">
-          <div>
-            <label className="block text-xs text-slate-600" htmlFor="cloud-auth-api-url">
-              同步服务地址（HTTPS）
-            </label>
-            <input
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
-              id="cloud-auth-api-url"
-              onChange={(event) => setApiBaseUrl(event.target.value)}
-              placeholder="https://sync.orbitterm.example"
-              type="url"
-              value={apiBaseUrl}
-            />
-          </div>
+          {!policy?.hideSyncDomainInput ? (
+            <div>
+              <label className="block text-xs text-slate-600" htmlFor="cloud-auth-api-url">
+                {t('cloud.syncUrlLabel')}
+              </label>
+              <input
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300 disabled:cursor-not-allowed disabled:bg-slate-100"
+                disabled={policy?.lockSyncDomain === true}
+                id="cloud-auth-api-url"
+                onBlur={() => {
+                  if (apiBaseUrl.trim()) {
+                    void refreshPolicyByEndpoint(apiBaseUrl);
+                  }
+                }}
+                onChange={(event) => setApiBaseUrl(event.target.value)}
+                placeholder={t('cloud.syncUrlPlaceholder')}
+                type="url"
+                value={apiBaseUrl}
+              />
+              {policy?.lockSyncDomain ? (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {t('cloud.syncUrlLocked')}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              {t('cloud.syncUrlHidden')}
+              {policy?.defaultSyncDomain ? ` ${policy.defaultSyncDomain}` : ''}
+            </div>
+          )}
 
           <div>
             <label className="block text-xs text-slate-600" htmlFor="cloud-auth-email">
-              邮箱账号
+              {t('cloud.emailLabel')}
             </label>
             <input
               className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
@@ -144,13 +219,13 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
 
           <div>
             <label className="block text-xs text-slate-600" htmlFor="cloud-auth-password">
-              账号密码
+              {t('cloud.passwordLabel')}
             </label>
             <input
               className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
               id="cloud-auth-password"
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="至少 8 位"
+              placeholder={t('cloud.passwordPlaceholder')}
               type="password"
               value={password}
             />
@@ -172,7 +247,7 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
             }}
             type="button"
           >
-            跳过（本次）
+            {t('cloud.btnSkip')}
           </button>
           <button
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -182,7 +257,7 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
             }}
             type="button"
           >
-            {isSyncingCloud ? '处理中...' : '注册账号'}
+            {isSyncingCloud ? t('common.processing') : t('cloud.btnRegister')}
           </button>
           <button
             className="rounded-lg border border-[#2f6df4] bg-[#2f6df4] px-3 py-2 text-xs font-semibold text-white hover:bg-[#245ad0] disabled:cursor-not-allowed disabled:opacity-60"
@@ -192,7 +267,7 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
             }}
             type="button"
           >
-            {isSyncingCloud ? '处理中...' : '登录并同步'}
+            {isSyncingCloud ? t('common.processing') : t('cloud.btnLogin')}
           </button>
         </div>
       </div>

@@ -39,6 +39,7 @@ type config struct {
 	Admin2FAEnabled     bool
 	Admin2FACode        string
 	AdminSessionHours   int
+	SetupInitToken      string
 }
 
 type runtimeSettings struct {
@@ -192,6 +193,9 @@ func main() {
 	if err := a.loadRuntimeSettings(ctx); err != nil {
 		log.Fatalf("运行参数加载失败: %v", err)
 	}
+	if err := a.loadBootstrapConfig(ctx); err != nil {
+		log.Fatalf("系统引导配置加载失败: %v", err)
+	}
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -216,9 +220,11 @@ func main() {
 		a.rateLimitMiddleware(a.authLimiter, "请求过于频繁，请稍后再试。"),
 		a.handleLogin,
 	)
+	router.GET("/client/config", a.handleClientConfig)
 
 	syncGroup := router.Group("/sync")
 	syncGroup.Use(a.jwtAuthMiddleware())
+	syncGroup.Use(a.requireActiveSyncLicenseMiddleware())
 	syncGroup.Use(a.rateLimitMiddleware(a.syncLimiter, "同步请求过于频繁，请稍后重试。"))
 	syncGroup.GET("/status", a.handleSyncStatus)
 	syncGroup.POST("/push", a.handleSyncPush)
@@ -228,6 +234,8 @@ func main() {
 	accountGroup.Use(a.jwtAuthMiddleware())
 	accountGroup.GET("/devices", a.handleDevices)
 	accountGroup.POST("/logout/device", a.handleLogoutDevice)
+	accountGroup.POST("/license/activate", a.handleActivateLicense)
+	accountGroup.GET("/license/status", a.handleLicenseStatus)
 
 	a.registerAdminRoutes(router)
 
@@ -280,6 +288,28 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			value TEXT NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS sync_license_codes (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			code_hash TEXT NOT NULL UNIQUE,
+			plan_key TEXT NOT NULL,
+			duration_days INTEGER,
+			is_lifetime BOOLEAN NOT NULL DEFAULT FALSE,
+			reserved_email TEXT,
+			used_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+			used_by_email TEXT,
+			disabled BOOLEAN NOT NULL DEFAULT FALSE,
+			note TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			activated_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_sync_entitlements (
+			user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			plan_key TEXT NOT NULL,
+			is_lifetime BOOLEAN NOT NULL DEFAULT FALSE,
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMPTZ,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_updated_at ON vault_blobs(updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_vault_blobs_version ON vault_blobs(version)`,
 		`CREATE INDEX IF NOT EXISTS idx_snippets_user_updated_at ON snippets(user_id, updated_at DESC)`,
@@ -287,6 +317,9 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_devices_user_fingerprint ON user_devices(user_id, device_fingerprint)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_devices_user_last_seen ON user_devices(user_id, last_seen_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_devices_token_jti ON user_devices(current_token_jti)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_license_codes_created_at ON sync_license_codes(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sync_license_codes_used_by_user ON sync_license_codes(used_by_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sync_entitlements_expires_at ON user_sync_entitlements(expires_at)`,
 	}
 
 	for _, stmt := range statements {
@@ -306,12 +339,13 @@ func loadConfig() (config, error) {
 		MaxRequestBodyBytes: readEnvInt64("MAX_REQUEST_BODY_BYTES", 4*1024*1024),
 		AuthRateLimitPerMin: readEnvInt("AUTH_RATE_LIMIT_PER_MIN", 30),
 		SyncRateLimitPerMin: readEnvInt("SYNC_RATE_LIMIT_PER_MIN", 120),
-		AdminWebEnabled:     readEnvBool("ADMIN_WEB_ENABLED", false),
+		AdminWebEnabled:     readEnvBool("ADMIN_WEB_ENABLED", true),
 		AdminUsername:       strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
 		AdminPasswordHash:   strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
 		Admin2FAEnabled:     readEnvBool("ADMIN_2FA_ENABLED", false),
 		Admin2FACode:        strings.TrimSpace(os.Getenv("ADMIN_2FA_CODE")),
 		AdminSessionHours:   readEnvInt("ADMIN_SESSION_HOURS", 12),
+		SetupInitToken:      strings.TrimSpace(os.Getenv("SETUP_INIT_TOKEN")),
 	}
 
 	expireHours := readEnv("JWT_EXPIRE_HOURS", "720")
@@ -327,10 +361,7 @@ func loadConfig() (config, error) {
 	if cfg.DatabaseURL == "" {
 		return config{}, errors.New("DATABASE_URL 未设置")
 	}
-	if cfg.JWTSecret == "" {
-		return config{}, errors.New("JWT_SECRET 未设置")
-	}
-	if len(cfg.JWTSecret) < 32 {
+	if cfg.JWTSecret != "" && len(cfg.JWTSecret) < 32 {
 		return config{}, errors.New("JWT_SECRET 长度至少需要 32 字节")
 	}
 	if cfg.MaxRequestBodyBytes <= 0 {
@@ -342,24 +373,18 @@ func loadConfig() (config, error) {
 	if cfg.AdminSessionHours <= 0 || cfg.AdminSessionHours > 168 {
 		return config{}, errors.New("ADMIN_SESSION_HOURS 必须在 1 到 168 小时之间")
 	}
-	if cfg.AdminWebEnabled {
-		if cfg.AdminUsername == "" {
-			return config{}, errors.New("启用管理员 Web 时必须设置 ADMIN_USERNAME")
-		}
-		if cfg.AdminPasswordHash == "" {
-			adminPassword := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
-			if adminPassword == "" {
-				return config{}, errors.New("启用管理员 Web 时必须设置 ADMIN_PASSWORD 或 ADMIN_PASSWORD_HASH")
-			}
+	if cfg.AdminPasswordHash == "" {
+		adminPassword := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+		if adminPassword != "" {
 			hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
 			if hashErr != nil {
 				return config{}, errors.New("ADMIN_PASSWORD 处理失败")
 			}
 			cfg.AdminPasswordHash = string(hashBytes)
 		}
-		if cfg.Admin2FAEnabled && cfg.Admin2FACode == "" {
-			return config{}, errors.New("ADMIN_2FA_ENABLED=true 时必须提供 ADMIN_2FA_CODE")
-		}
+	}
+	if cfg.Admin2FAEnabled && cfg.Admin2FACode == "" {
+		return config{}, errors.New("ADMIN_2FA_ENABLED=true 时必须提供 ADMIN_2FA_CODE")
 	}
 
 	return cfg, nil

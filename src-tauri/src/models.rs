@@ -388,6 +388,12 @@ pub struct ExportEncryptedBackupResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportEncryptedBackupRequest {
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthCheckItem {
     pub id: String,
     pub label: String,

@@ -59,6 +59,16 @@ export const exportEncryptedBackup = async (
   });
 };
 
+export const importEncryptedBackup = async (
+  sourcePath: string
+): Promise<UnlockAndLoadResponse> => {
+  return tauriInvoke<UnlockAndLoadResponse>('import_encrypted_backup', {
+    request: {
+      sourcePath
+    }
+  });
+};
+
 export const exportVaultSyncBlob = async (): Promise<VaultSyncExportResponse> => {
   return tauriInvoke<VaultSyncExportResponse>('vault_export_sync_blob');
 };

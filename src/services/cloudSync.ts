@@ -1,6 +1,7 @@
 import { logAppError, logAppInfo, logAppWarn } from './appLog';
 const CLOUD_SYNC_SESSION_KEY = 'orbitterm:cloud-sync-session:v1';
 const CLOUD_SYNC_CURSOR_KEY = 'orbitterm:cloud-sync-cursor:v1';
+const CLOUD_SYNC_POLICY_KEY = 'orbitterm:cloud-sync-policy:v1';
 const REQUEST_TIMEOUT_MS = 12_000;
 
 export interface CloudSyncSession {
@@ -47,6 +48,22 @@ export interface CloudSyncCursor {
   updatedAt: string | null;
 }
 
+export interface CloudSyncPolicy {
+  defaultSyncDomain: string;
+  lockSyncDomain: boolean;
+  hideSyncDomainInput: boolean;
+  requireActivation: boolean;
+  setupRequired: boolean;
+}
+
+export interface CloudLicenseStatus {
+  active: boolean;
+  planKey?: string;
+  isLifetime: boolean;
+  expiresAt?: string;
+  remainingDays?: number;
+}
+
 export interface CloudDeviceItem {
   id: string;
   deviceName: string;
@@ -64,6 +81,11 @@ interface CloudDevicesResponse {
 interface LogoutDeviceResponse {
   revokedCount: number;
   message: string;
+}
+
+interface LicenseActivateResponse {
+  message: string;
+  status: CloudLicenseStatus;
 }
 
 export class CloudSyncConflictError extends Error {
@@ -248,6 +270,29 @@ const saveSession = (session: CloudSyncSession): void => {
   window.localStorage.setItem(CLOUD_SYNC_SESSION_KEY, JSON.stringify(session));
 };
 
+const saveCloudSyncPolicy = (policy: CloudSyncPolicy): void => {
+  window.localStorage.setItem(CLOUD_SYNC_POLICY_KEY, JSON.stringify(policy));
+};
+
+export const readCloudSyncPolicy = (): CloudSyncPolicy | null => {
+  const raw = window.localStorage.getItem(CLOUD_SYNC_POLICY_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<CloudSyncPolicy>;
+    return {
+      defaultSyncDomain: typeof parsed.defaultSyncDomain === 'string' ? parsed.defaultSyncDomain : '',
+      lockSyncDomain: parsed.lockSyncDomain === true,
+      hideSyncDomainInput: parsed.hideSyncDomainInput === true,
+      requireActivation: parsed.requireActivation !== false,
+      setupRequired: parsed.setupRequired === true
+    };
+  } catch (_error) {
+    return null;
+  }
+};
+
 const normalizeSyncIdentity = (apiBaseUrl: string, email: string): string => {
   return `${apiBaseUrl.trim().replace(/\/+$/, '').toLowerCase()}|${email.trim().toLowerCase()}`;
 };
@@ -340,6 +385,10 @@ export const clearCloudSyncSession = (): void => {
   window.localStorage.removeItem(CLOUD_SYNC_SESSION_KEY);
 };
 
+export const clearCloudSyncPolicy = (): void => {
+  window.localStorage.removeItem(CLOUD_SYNC_POLICY_KEY);
+};
+
 export const readCloudSyncCursor = (session: CloudSyncSession): CloudSyncCursor | null => {
   const key = normalizeSyncIdentity(session.apiBaseUrl, session.email);
   const store = readCursorStore();
@@ -386,6 +435,12 @@ export const registerCloudSync = async (
       currentDeviceId: payload.currentDeviceId
     };
     saveSession(session);
+    try {
+      const policy = await fetchCloudSyncPolicy(endpoint);
+      saveCloudSyncPolicy(policy);
+    } catch (_error) {
+      // Ignore policy fetch failures and keep flow.
+    }
     logAppInfo('cloud-sync', '注册同步账号成功', {
       endpoint,
       email: payload.user.email
@@ -428,6 +483,12 @@ export const loginCloudSync = async (
       currentDeviceId: payload.currentDeviceId
     };
     saveSession(session);
+    try {
+      const policy = await fetchCloudSyncPolicy(endpoint);
+      saveCloudSyncPolicy(policy);
+    } catch (_error) {
+      // Ignore policy fetch failures and keep flow.
+    }
     logAppInfo('cloud-sync', '登录同步账号成功', {
       endpoint,
       email: payload.user.email
@@ -544,4 +605,46 @@ export const logoutAllCloudDevices = async (
     })
   });
   return readJson<LogoutDeviceResponse>(response, '退出所有设备失败，请稍后重试。');
+};
+
+export const fetchCloudSyncPolicy = async (apiBaseUrl: string): Promise<CloudSyncPolicy> => {
+  const endpoint = ensureHttpsEndpoint(apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/client/config`, {
+    method: 'GET'
+  });
+  const payload = await readJson<Partial<CloudSyncPolicy>>(response, '读取客户端策略失败，请稍后重试。');
+  return {
+    defaultSyncDomain:
+      typeof payload.defaultSyncDomain === 'string' ? payload.defaultSyncDomain.trim() : '',
+    lockSyncDomain: payload.lockSyncDomain === true,
+    hideSyncDomainInput: payload.hideSyncDomainInput === true,
+    requireActivation: payload.requireActivation !== false,
+    setupRequired: payload.setupRequired === true
+  };
+};
+
+export const getCloudLicenseStatus = async (
+  session: CloudSyncSession
+): Promise<CloudLicenseStatus> => {
+  const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/license/status`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${session.token}`
+    }
+  });
+  return readJson<CloudLicenseStatus>(response, '读取授权状态失败，请稍后重试。');
+};
+
+export const activateCloudLicense = async (
+  session: CloudSyncSession,
+  code: string
+): Promise<LicenseActivateResponse> => {
+  const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/license/activate`, {
+    method: 'POST',
+    headers: authHeaders(session.token),
+    body: JSON.stringify({ code })
+  });
+  return readJson<LicenseActivateResponse>(response, '激活失败，请稍后重试。');
 };

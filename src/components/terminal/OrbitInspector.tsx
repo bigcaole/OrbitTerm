@@ -13,6 +13,7 @@ interface OrbitInspectorProps {
   onClose: () => void;
   onAskAi: (errorMessage: string, logContext: string[]) => Promise<AiExplainSshErrorResponse>;
   onExportBackup: () => Promise<void>;
+  onImportBackup: () => Promise<void>;
   onRefreshHealth: () => Promise<void>;
   onClearAppLogs: () => void;
 }
@@ -46,6 +47,7 @@ export function OrbitInspector({
   onClose,
   onAskAi,
   onExportBackup,
+  onImportBackup,
   onRefreshHealth,
   onClearAppLogs
 }: OrbitInspectorProps): JSX.Element | null {
@@ -53,6 +55,7 @@ export function OrbitInspector({
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [backupLoading, setBackupLoading] = useState<boolean>(false);
+  const [importBackupLoading, setImportBackupLoading] = useState<boolean>(false);
 
   const visibleLogs = useMemo(() => {
     const scoped = sessionId ? logs.filter((item) => item.sessionId === sessionId) : logs;
@@ -100,6 +103,15 @@ export function OrbitInspector({
       await onExportBackup();
     } finally {
       setBackupLoading(false);
+    }
+  };
+
+  const handleImportBackup = async (): Promise<void> => {
+    setImportBackupLoading(true);
+    try {
+      await onImportBackup();
+    } finally {
+      setImportBackupLoading(false);
     }
   };
 
@@ -200,19 +212,31 @@ export function OrbitInspector({
           <section className="rounded-xl border border-[#274267] bg-[#0a172c] p-3">
             <div className="mb-2 flex items-center justify-between">
               <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8ea4c7]">配置备份</h3>
-              <button
-                className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={backupLoading}
-                onClick={() => {
-                  void handleExportBackup();
-                }}
-                type="button"
-              >
-                {backupLoading ? '导出中...' : '导出加密备份文件'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={importBackupLoading}
+                  onClick={() => {
+                    void handleImportBackup();
+                  }}
+                  type="button"
+                >
+                  {importBackupLoading ? '导入中...' : '导入加密备份'}
+                </button>
+                <button
+                  className="rounded-md border border-[#34527a] bg-[#12233d] px-2 py-1 text-[11px] text-[#d7e5ff] hover:bg-[#183258] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={backupLoading}
+                  onClick={() => {
+                    void handleExportBackup();
+                  }}
+                  type="button"
+                >
+                  {backupLoading ? '导出中...' : '导出加密备份'}
+                </button>
+              </div>
             </div>
             <p className="text-[11px] text-[#8ea4c7]">
-              导出的是加密后的 vault.bin，不包含明文主机数据。
+              导入/导出均使用加密后的 vault.bin，恢复时会忽略设备差异并重建本地配置。
             </p>
           </section>
 

@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useHostStore } from '../store/useHostStore';
+import { useI18n } from '../i18n/useI18n';
 
 export function UnlockScreen(): JSX.Element {
+  const { t } = useI18n();
   const unlockVault = useHostStore((state) => state.unlockVault);
   const isUnlocking = useHostStore((state) => state.isUnlocking);
   const unlockError = useHostStore((state) => state.unlockError);
@@ -24,8 +26,8 @@ export function UnlockScreen(): JSX.Element {
         <p className="text-center text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
           OrbitTerm · Vault
         </p>
-        <h1 className="mt-4 text-center text-2xl font-semibold text-slate-900">金库解锁</h1>
-        <p className="mt-2 text-center text-sm text-slate-600">输入主密码后按 Enter 解锁。</p>
+        <h1 className="mt-4 text-center text-2xl font-semibold text-slate-900">{t('unlock.title')}</h1>
+        <p className="mt-2 text-center text-sm text-slate-600">{t('unlock.subtitle')}</p>
 
         <div className="mt-8">
           <input
@@ -39,7 +41,9 @@ export function UnlockScreen(): JSX.Element {
                 void runUnlock();
               }
             }}
-            placeholder={isUnlocking ? '正在解锁...' : '请输入主密码'}
+            placeholder={
+              isUnlocking ? t('unlock.passwordPlaceholderUnlocking') : t('unlock.passwordPlaceholder')
+            }
             type="password"
             value={masterPassword}
           />

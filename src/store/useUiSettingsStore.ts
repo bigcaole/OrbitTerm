@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
 import type { OrbitThemePresetId } from '../theme/orbitTheme';
+import {
+  detectDefaultAppLanguage,
+  normalizeAppLanguage,
+  type AppLanguage
+} from '../i18n/core';
 
 export type CloseWindowAction = 'ask' | 'tray' | 'exit';
 
@@ -16,6 +21,7 @@ interface UiSettingsState {
   autoLockEnabled: boolean;
   autoLockMinutes: number;
   closeWindowAction: CloseWindowAction;
+  language: AppLanguage;
   snippetsPanelCollapsed: boolean;
   hasCompletedOnboarding: boolean;
   hostUsageStats: Record<string, { count: number; lastConnectedAt: number }>;
@@ -30,6 +36,7 @@ interface UiSettingsState {
   setAutoLockEnabled: (value: boolean) => void;
   setAutoLockMinutes: (value: number) => void;
   setCloseWindowAction: (value: CloseWindowAction) => void;
+  setLanguage: (value: AppLanguage) => void;
   setSnippetsPanelCollapsed: (value: boolean) => void;
   setHasCompletedOnboarding: (value: boolean) => void;
   recordHostConnection: (hostId: string) => void;
@@ -115,6 +122,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       autoLockEnabled: true,
       autoLockMinutes: 5,
       closeWindowAction: 'ask',
+      language: detectDefaultAppLanguage(),
       snippetsPanelCollapsed: true,
       hasCompletedOnboarding: false,
       hostUsageStats: {},
@@ -154,6 +162,9 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       },
       setCloseWindowAction: (value) => {
         set({ closeWindowAction: normalizeCloseWindowAction(value, 'ask') });
+      },
+      setLanguage: (value) => {
+        set({ language: normalizeAppLanguage(value) });
       },
       setSnippetsPanelCollapsed: (value) => {
         set({ snippetsPanelCollapsed: value });
@@ -234,6 +245,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
             persisted.closeWindowAction,
             currentState.closeWindowAction
           ),
+          language: normalizeAppLanguage(persisted.language),
           snippetsPanelCollapsed:
             typeof persisted.snippetsPanelCollapsed === 'boolean'
               ? persisted.snippetsPanelCollapsed
@@ -257,6 +269,7 @@ export const useUiSettingsStore = create<UiSettingsState>()(
         autoLockEnabled: state.autoLockEnabled,
         autoLockMinutes: state.autoLockMinutes,
         closeWindowAction: state.closeWindowAction,
+        language: state.language,
         snippetsPanelCollapsed: state.snippetsPanelCollapsed,
         hasCompletedOnboarding: state.hasCompletedOnboarding,
         hostUsageStats: state.hostUsageStats

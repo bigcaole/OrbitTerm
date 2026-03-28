@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { useHostStore } from '../store/useHostStore';
 import { useUiSettingsStore } from '../store/useUiSettingsStore';
+import { useI18n } from '../i18n/useI18n';
 
 type OnboardingStep = 1 | 2 | 3 | 4;
 
@@ -35,6 +36,7 @@ const createRecoveryKey = (): string => {
 };
 
 export function FirstRunOnboarding(): JSX.Element {
+  const { t } = useI18n();
   const unlockVault = useHostStore((state) => state.unlockVault);
   const isUnlocking = useHostStore((state) => state.isUnlocking);
   const unlockError = useHostStore((state) => state.unlockError);
@@ -65,8 +67,8 @@ export function FirstRunOnboarding(): JSX.Element {
   const generateRecoveryKey = (): void => {
     const key = createRecoveryKey();
     setRecoveryKey(key);
-    toast.success('恢复密钥已生成', {
-      description: '请离线保存，避免与主密码保存在同一位置。'
+    toast.success(t('onboarding.toastRecoveryGenerated'), {
+      description: t('onboarding.toastRecoveryGeneratedDesc')
     });
   };
 
@@ -77,9 +79,9 @@ export function FirstRunOnboarding(): JSX.Element {
 
     try {
       await navigator.clipboard.writeText(recoveryKey);
-      toast.success('恢复密钥已复制到剪贴板');
+      toast.success(t('onboarding.toastRecoveryCopied'));
     } catch (_error) {
-      toast.error('复制失败，请手动记录恢复密钥');
+      toast.error(t('onboarding.toastRecoveryCopyFailed'));
     }
   };
 
@@ -92,8 +94,7 @@ export function FirstRunOnboarding(): JSX.Element {
     });
 
     if (!parsed.success) {
-      const firstError = parsed.error.issues[0]?.message ?? '请输入合法的主密码。';
-      setLocalError(firstError);
+      setLocalError(t('onboarding.errorInvalidPassword'));
       return;
     }
 
@@ -101,7 +102,7 @@ export function FirstRunOnboarding(): JSX.Element {
     const state = useHostStore.getState();
     const appView = state.appView;
     if (appView !== 'dashboard') {
-      setLocalError(state.unlockError ?? '主密码设置失败，请检查后重试。');
+      setLocalError(state.unlockError ?? t('onboarding.errorInitFailed'));
       return;
     }
 
@@ -125,9 +126,9 @@ export function FirstRunOnboarding(): JSX.Element {
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8fb0de]">OrbitTerm</p>
-            <h1 className="mt-2 text-2xl font-semibold text-white">首次启动引导</h1>
+            <h1 className="mt-2 text-2xl font-semibold text-white">{t('onboarding.title')}</h1>
           </div>
-          <p className="text-xs text-[#9cb7db]">步骤 {step}/4</p>
+          <p className="text-xs text-[#9cb7db]">{t('onboarding.step', { step })}</p>
         </div>
 
         <div className="mt-4 h-1.5 rounded-full bg-[#163050]">
@@ -139,22 +140,25 @@ export function FirstRunOnboarding(): JSX.Element {
 
         {step === 1 && (
           <div className="mt-8 space-y-5">
-            <h2 className="text-3xl font-semibold leading-tight text-white">欢迎来到轨连终端</h2>
+            <h2 className="text-3xl font-semibold leading-tight text-white">{t('onboarding.welcomeTitle')}</h2>
             <p className="max-w-2xl text-sm leading-7 text-[#b8cae7]">
-              轨连终端强调三件事：安全、直观、智能。你将在几分钟内完成金库初始化，并准备好第一台服务器连接。
+              {t('onboarding.welcomeDesc')}
             </p>
             <div className="grid gap-3 sm:grid-cols-3">
-              <article className="rounded-2xl border border-[#2a466d] bg-[#0a1a2d]/70 p-4">
-                <p className="text-sm font-semibold text-white">安全</p>
-                <p className="mt-2 text-xs leading-6 text-[#a6bfdc]">本地金库采用端到端加密，主密码仅在你设备侧参与解密。</p>
+              <article className="overflow-hidden rounded-2xl border border-[#31547f] bg-[linear-gradient(140deg,#0e253f,#11375f)] p-4">
+                <div className="mb-3 h-16 rounded-xl bg-[radial-gradient(circle_at_20%_40%,rgba(132,189,255,0.42),transparent_46%),radial-gradient(circle_at_85%_20%,rgba(93,225,181,0.3),transparent_44%)]" />
+                <p className="text-sm font-semibold text-white">{t('persona.ops.title')}</p>
+                <p className="mt-2 text-xs leading-6 text-[#b5ceed]">{t('persona.ops.desc')}</p>
               </article>
-              <article className="rounded-2xl border border-[#2a466d] bg-[#0a1a2d]/70 p-4">
-                <p className="text-sm font-semibold text-white">直观</p>
-                <p className="mt-2 text-xs leading-6 text-[#a6bfdc]">主机、身份、终端与 SFTP 一体化管理，减少心智切换。</p>
+              <article className="overflow-hidden rounded-2xl border border-[#4a4f8a] bg-[linear-gradient(140deg,#1f224d,#283a7a)] p-4">
+                <div className="mb-3 h-16 rounded-xl bg-[radial-gradient(circle_at_15%_35%,rgba(199,156,255,0.4),transparent_46%),radial-gradient(circle_at_82%_20%,rgba(101,175,255,0.32),transparent_44%)]" />
+                <p className="text-sm font-semibold text-white">{t('persona.dev.title')}</p>
+                <p className="mt-2 text-xs leading-6 text-[#c3cdf6]">{t('persona.dev.desc')}</p>
               </article>
-              <article className="rounded-2xl border border-[#2a466d] bg-[#0a1a2d]/70 p-4">
-                <p className="text-sm font-semibold text-white">智能</p>
-                <p className="mt-2 text-xs leading-6 text-[#a6bfdc]">内置 AI 指令助手与会话能力，帮助你更快完成运维动作。</p>
+              <article className="overflow-hidden rounded-2xl border border-[#6a5a37] bg-[linear-gradient(140deg,#3f3323,#594524)] p-4">
+                <div className="mb-3 h-16 rounded-xl bg-[radial-gradient(circle_at_20%_40%,rgba(255,220,136,0.4),transparent_46%),radial-gradient(circle_at_84%_24%,rgba(255,169,109,0.32),transparent_44%)]" />
+                <p className="text-sm font-semibold text-white">{t('persona.newbie.title')}</p>
+                <p className="mt-2 text-xs leading-6 text-[#f0ddbe]">{t('persona.newbie.desc')}</p>
               </article>
             </div>
           </div>
@@ -162,14 +166,14 @@ export function FirstRunOnboarding(): JSX.Element {
 
         {step === 2 && (
           <div className="mt-8 space-y-5">
-            <h2 className="text-3xl font-semibold leading-tight text-white">E2EE 端到端加密说明</h2>
+            <h2 className="text-3xl font-semibold leading-tight text-white">{t('onboarding.e2eeTitle')}</h2>
             <p className="max-w-2xl text-sm leading-7 text-[#b8cae7]">
-              你的主机数据会先在本地加密，再写入金库文件。解密密钥从主密码派生，我们不会上传或托管你的主密码。
+              {t('onboarding.e2eeDesc')}
             </p>
             <div className="rounded-2xl border border-rose-300/40 bg-rose-500/10 p-4">
-              <p className="text-sm font-semibold text-rose-100">重要提示</p>
+              <p className="text-sm font-semibold text-rose-100">{t('onboarding.important')}</p>
               <p className="mt-2 text-xs leading-6 text-rose-100/90">
-                我们不存储您的主密码，一旦丢失将无法找回您的数据。请务必妥善保管。
+                {t('onboarding.importantDesc')}
               </p>
             </div>
           </div>
@@ -177,33 +181,37 @@ export function FirstRunOnboarding(): JSX.Element {
 
         {step === 3 && (
           <div className="mt-8 space-y-5">
-            <h2 className="text-3xl font-semibold leading-tight text-white">设置主密码</h2>
+            <h2 className="text-3xl font-semibold leading-tight text-white">{t('onboarding.passwordTitle')}</h2>
             <p className="max-w-2xl text-sm leading-7 text-[#b8cae7]">
-              建议使用 12 位以上高强度密码，并避免与其他网站密码复用。
+              {t('onboarding.passwordDesc')}
             </p>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-[0.14em] text-[#95b0d8]">主密码</label>
+                <label className="text-xs font-semibold uppercase tracking-[0.14em] text-[#95b0d8]">
+                  {t('onboarding.passwordLabel')}
+                </label>
                 <input
                   autoComplete="new-password"
                   className="w-full rounded-xl border border-[#35547f] bg-[#0c1d33] px-3 py-2.5 text-sm text-white outline-none transition focus:border-[#63a2ff] focus:ring-2 focus:ring-[#63a2ff]/25"
                   disabled={isUnlocking}
                   onChange={(event) => setMasterPassword(event.target.value)}
-                  placeholder="至少 12 位，含大小写/数字/符号"
+                  placeholder={t('onboarding.passwordPlaceholder')}
                   type="password"
                   value={masterPassword}
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-[0.14em] text-[#95b0d8]">确认主密码</label>
+                <label className="text-xs font-semibold uppercase tracking-[0.14em] text-[#95b0d8]">
+                  {t('onboarding.passwordConfirmLabel')}
+                </label>
                 <input
                   autoComplete="new-password"
                   className="w-full rounded-xl border border-[#35547f] bg-[#0c1d33] px-3 py-2.5 text-sm text-white outline-none transition focus:border-[#63a2ff] focus:ring-2 focus:ring-[#63a2ff]/25"
                   disabled={isUnlocking}
                   onChange={(event) => setConfirmPassword(event.target.value)}
-                  placeholder="再次输入主密码"
+                  placeholder={t('onboarding.passwordConfirmPlaceholder')}
                   type="password"
                   value={confirmPassword}
                 />
@@ -212,13 +220,13 @@ export function FirstRunOnboarding(): JSX.Element {
 
             <div className="rounded-2xl border border-[#2a466d] bg-[#0a1a2d]/70 p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-semibold text-white">恢复密钥（可选）</p>
+                <p className="text-sm font-semibold text-white">{t('onboarding.recoveryTitle')}</p>
                 <button
                   className="rounded-lg border border-[#3f679b] bg-[#112844] px-2.5 py-1 text-xs text-[#d8e8ff] hover:bg-[#16345a]"
                   onClick={generateRecoveryKey}
                   type="button"
                 >
-                  生成恢复密钥
+                  {t('onboarding.generateRecovery')}
                 </button>
                 <button
                   className="rounded-lg border border-[#3f679b] bg-[#112844] px-2.5 py-1 text-xs text-[#d8e8ff] hover:bg-[#16345a] disabled:cursor-not-allowed disabled:opacity-60"
@@ -228,10 +236,10 @@ export function FirstRunOnboarding(): JSX.Element {
                   }}
                   type="button"
                 >
-                  复制
+                  {t('common.copy')}
                 </button>
               </div>
-              <p className="mt-2 text-xs leading-6 text-[#a9c2df]">用于极端情况下的本地解密辅助，请离线保存，切勿公开。</p>
+              <p className="mt-2 text-xs leading-6 text-[#a9c2df]">{t('onboarding.recoveryHint')}</p>
               {recoveryKey && (
                 <code className="mt-3 block overflow-x-auto rounded-lg border border-[#2f4f7a] bg-[#091729] px-3 py-2 text-xs text-[#d7e7ff]">
                   {recoveryKey}
@@ -247,13 +255,13 @@ export function FirstRunOnboarding(): JSX.Element {
 
         {step === 4 && (
           <div className="mt-8 space-y-5">
-            <h2 className="text-3xl font-semibold leading-tight text-white">准备连接第一台服务器</h2>
+            <h2 className="text-3xl font-semibold leading-tight text-white">{t('onboarding.finishTitle')}</h2>
             <p className="max-w-2xl text-sm leading-7 text-[#b8cae7]">
-              你可以直接进入仪表盘，或者使用“添加我的第一台服务器”快速填充一份示例连接模板。
+              {t('onboarding.finishDesc')}
             </p>
 
             <div className="rounded-2xl border border-[#2a466d] bg-[#0a1a2d]/70 p-4 text-xs leading-6 text-[#a6bfdc]">
-              快速模板将预填：`127.0.0.1:22`、身份名“默认身份”、用户名 `root`，你可在向导中自行修改。
+              {t('onboarding.quickTemplate')}
             </div>
           </div>
         )}
@@ -265,7 +273,7 @@ export function FirstRunOnboarding(): JSX.Element {
             onClick={goBack}
             type="button"
           >
-            上一步
+            {t('common.back')}
           </button>
 
           {step < 3 && (
@@ -274,7 +282,7 @@ export function FirstRunOnboarding(): JSX.Element {
               onClick={goNext}
               type="button"
             >
-              下一步
+              {t('common.next')}
             </button>
           )}
 
@@ -287,7 +295,7 @@ export function FirstRunOnboarding(): JSX.Element {
               }}
               type="button"
             >
-              {isUnlocking ? '初始化中...' : '完成初始化'}
+              {isUnlocking ? t('onboarding.initLoading') : t('onboarding.initAction')}
             </button>
           )}
 
@@ -298,14 +306,14 @@ export function FirstRunOnboarding(): JSX.Element {
                 onClick={() => finishOnboarding(false)}
                 type="button"
               >
-                进入仪表盘
+                {t('onboarding.enterDashboard')}
               </button>
               <button
                 className="rounded-xl bg-[#2d78e6] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#3a84ef]"
                 onClick={() => finishOnboarding(true)}
                 type="button"
               >
-                添加我的第一台服务器
+                {t('onboarding.addFirstServer')}
               </button>
             </div>
           )}

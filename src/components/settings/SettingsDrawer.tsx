@@ -13,6 +13,8 @@ import { ORBIT_THEME_PRESETS } from '../../theme/orbitTheme';
 import { useHostStore } from '../../store/useHostStore';
 import { useUiSettingsStore, type CloseWindowAction } from '../../store/useUiSettingsStore';
 import { buildHostKey } from '../../utils/hostKey';
+import { APP_LANGUAGE_OPTIONS, type AppLanguage } from '../../i18n/core';
+import { useI18n } from '../../i18n/useI18n';
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -93,6 +95,7 @@ export function SettingsDrawer({
   activeTerminalTitle,
   onOpenCloudAuth
 }: SettingsDrawerProps): JSX.Element | null {
+  const { t } = useI18n();
   const terminalFontSize = useUiSettingsStore((state) => state.terminalFontSize);
   const terminalFontFamily = useUiSettingsStore((state) => state.terminalFontFamily);
   const terminalOpacity = useUiSettingsStore((state) => state.terminalOpacity);
@@ -104,6 +107,7 @@ export function SettingsDrawer({
   const autoLockEnabled = useUiSettingsStore((state) => state.autoLockEnabled);
   const autoLockMinutes = useUiSettingsStore((state) => state.autoLockMinutes);
   const closeWindowAction = useUiSettingsStore((state) => state.closeWindowAction);
+  const language = useUiSettingsStore((state) => state.language);
   const setTerminalFontSize = useUiSettingsStore((state) => state.setTerminalFontSize);
   const setTerminalFontFamily = useUiSettingsStore((state) => state.setTerminalFontFamily);
   const setTerminalOpacity = useUiSettingsStore((state) => state.setTerminalOpacity);
@@ -115,7 +119,11 @@ export function SettingsDrawer({
   const setAutoLockEnabled = useUiSettingsStore((state) => state.setAutoLockEnabled);
   const setAutoLockMinutes = useUiSettingsStore((state) => state.setAutoLockMinutes);
   const setCloseWindowAction = useUiSettingsStore((state) => state.setCloseWindowAction);
+  const setLanguage = useUiSettingsStore((state) => state.setLanguage);
   const cloudSyncSession = useHostStore((state) => state.cloudSyncSession);
+  const cloudSyncPolicy = useHostStore((state) => state.cloudSyncPolicy);
+  const cloudLicenseStatus = useHostStore((state) => state.cloudLicenseStatus);
+  const isActivatingCloudLicense = useHostStore((state) => state.isActivatingCloudLicense);
   const isSyncingCloud = useHostStore((state) => state.isSyncingCloud);
   const cloudSyncError = useHostStore((state) => state.cloudSyncError);
   const identities = useHostStore((state) => state.identities);
@@ -124,6 +132,8 @@ export function SettingsDrawer({
   const addIdentity = useHostStore((state) => state.addIdentity);
   const updateIdentity = useHostStore((state) => state.updateIdentity);
   const logoutCloudAccount = useHostStore((state) => state.logoutCloudAccount);
+  const refreshCloudLicenseStatus = useHostStore((state) => state.refreshCloudLicenseStatus);
+  const activateCloudLicenseCode = useHostStore((state) => state.activateCloudLicenseCode);
   const syncPullFromCloud = useHostStore((state) => state.syncPullFromCloud);
   const vaultVersion = useHostStore((state) => state.vaultVersion);
   const cloudDevices = useHostStore((state) => state.cloudDevices);
@@ -139,12 +149,14 @@ export function SettingsDrawer({
   const [isGeneratingKey, setIsGeneratingKey] = useState<boolean>(false);
   const [isDeployingKey, setIsDeployingKey] = useState<boolean>(false);
   const [isExportingKey, setIsExportingKey] = useState<boolean>(false);
+  const [licenseCodeInput, setLicenseCodeInput] = useState<string>('');
 
   useEffect(() => {
     if (!open || !cloudSyncSession) {
       return;
     }
     void loadCloudDevices();
+    void refreshCloudLicenseStatus();
   }, [cloudSyncSession, loadCloudDevices, open]);
 
   useEffect(() => {
@@ -241,6 +253,25 @@ export function SettingsDrawer({
     }
     return '每次关闭都询问';
   };
+
+  const licenseSummary = useMemo(() => {
+    if (!cloudSyncSession) {
+      return '未登录';
+    }
+    if (!cloudLicenseStatus) {
+      return '授权状态待刷新';
+    }
+    if (!cloudLicenseStatus.active) {
+      return '未激活（仅本地可用）';
+    }
+    if (cloudLicenseStatus.isLifetime) {
+      return '已激活（永久）';
+    }
+    if (cloudLicenseStatus.expiresAt) {
+      return `已激活（到期：${cloudLicenseStatus.expiresAt}）`;
+    }
+    return '已激活';
+  }, [cloudLicenseStatus, cloudSyncSession]);
 
   useEffect(() => {
     if (!open || !focusSectionId) {
@@ -588,6 +619,26 @@ export function SettingsDrawer({
           )}
 
           {showSettingsCategory && (
+            <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">{t('settings.languageTitle')}</h3>
+              <p className="text-xs text-slate-600">{t('settings.languageDesc')}</p>
+              <select
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+                onChange={(event) => {
+                  setLanguage(event.target.value as AppLanguage);
+                }}
+                value={language}
+              >
+                {APP_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </section>
+          )}
+
+          {showSettingsCategory && (
             <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-security"
@@ -875,12 +926,28 @@ export function SettingsDrawer({
               >
                 退出登录
               </button>
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSyncingCloud || !cloudSyncSession}
+                onClick={() => {
+                  void refreshCloudLicenseStatus();
+                }}
+                type="button"
+              >
+                刷新授权
+              </button>
             </div>
 
             {cloudSyncSession ? (
               <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
                 <p>已登录：{cloudSyncSession.email}（本地金库版本：v{vaultVersion ?? '-'}）</p>
                 <p className="text-emerald-800/90">同步服务：{cloudSyncSession.apiBaseUrl}</p>
+                <p className="text-emerald-900/90">同步授权：{licenseSummary}</p>
+                {cloudSyncPolicy?.lockSyncDomain ? (
+                  <p className="text-emerald-900/90">
+                    域名策略：已锁定{cloudSyncPolicy.hideSyncDomainInput ? '（并隐藏输入）' : ''}
+                  </p>
+                ) : null}
               </div>
             ) : (
               <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
@@ -892,6 +959,44 @@ export function SettingsDrawer({
                 {cloudSyncError}
               </p>
             ) : null}
+            {cloudSyncSession && cloudSyncPolicy?.requireActivation !== false && (
+              <div className="rounded-lg border border-[#cad9f8] bg-[#f4f8ff] px-3 py-3">
+                <p className="text-xs font-semibold text-slate-800">同步激活码</p>
+                <p className="mt-1 text-[11px] text-slate-600">
+                  注册/登录后请输入购买的激活码以开通云同步服务。
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-300"
+                    onChange={(event) => {
+                      setLicenseCodeInput(event.target.value);
+                    }}
+                    placeholder="例如：OT-MONTH-XXXXXXXX-XXXXXXXX"
+                    type="text"
+                    value={licenseCodeInput}
+                  />
+                  <button
+                    className="rounded-lg border border-[#2f6df4] bg-[#2f6df4] px-3 py-2 text-xs font-semibold text-white hover:bg-[#245ad0] disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={isActivatingCloudLicense}
+                    onClick={() => {
+                      void activateCloudLicenseCode(licenseCodeInput)
+                        .then(() => {
+                          setLicenseCodeInput('');
+                          void refreshCloudLicenseStatus();
+                        })
+                        .catch((error) => {
+                          const fallback = '激活失败，请稍后重试。';
+                          const message = error instanceof Error ? error.message : fallback;
+                          toast.error(message || fallback);
+                        });
+                    }}
+                    type="button"
+                  >
+                    {isActivatingCloudLicense ? '激活中...' : '激活'}
+                  </button>
+                </div>
+              </div>
+            )}
             </section>
           )}
 
