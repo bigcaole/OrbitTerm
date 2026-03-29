@@ -78,6 +78,25 @@ export interface CloudDeviceItem {
   isCurrent: boolean;
 }
 
+export interface CloudUser2FAStatus {
+  enabled: boolean;
+  method: string;
+  backupCodesRemaining: number;
+}
+
+export interface CloudUser2FABeginResponse {
+  method: string;
+  secret: string;
+  issuer: string;
+  account: string;
+  otpauthUri: string;
+}
+
+export interface CloudUser2FAEnableResponse {
+  message: string;
+  backupCodes: string[];
+}
+
 interface CloudErrorPayload {
   message?: string;
   code?: string;
@@ -647,7 +666,11 @@ export const registerCloudSync = async (
 export const loginCloudSync = async (
   apiBaseUrl: string,
   email: string,
-  password: string
+  password: string,
+  options?: {
+    otpCode?: string;
+    backupCode?: string;
+  }
 ): Promise<CloudSyncSession> => {
   const endpoint = ensureHttpsEndpoint(apiBaseUrl);
   try {
@@ -659,6 +682,8 @@ export const loginCloudSync = async (
       body: JSON.stringify({
         email,
         password,
+        otpCode: options?.otpCode?.trim() || undefined,
+        backupCode: options?.backupCode?.trim() || undefined,
         deviceName: detectDeviceName(),
         deviceLocation: detectDeviceLocation()
       })
@@ -842,6 +867,69 @@ export const getCloudLicenseStatus = async (
     }
   });
   return readJson<CloudLicenseStatus>(response, '读取授权状态失败，请稍后重试。');
+};
+
+export const getCloudUser2FAStatus = async (
+  session: CloudSyncSession
+): Promise<CloudUser2FAStatus> => {
+  const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/2fa/status`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${session.token}`
+    }
+  });
+  return readJson<CloudUser2FAStatus>(response, '读取 2FA 状态失败，请稍后重试。');
+};
+
+export const beginCloudUser2FA = async (
+  session: CloudSyncSession
+): Promise<CloudUser2FABeginResponse> => {
+  const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/2fa/totp/begin`, {
+    method: 'POST',
+    headers: authHeaders(session.token),
+    body: JSON.stringify({})
+  });
+  return readJson<CloudUser2FABeginResponse>(response, '生成 2FA 密钥失败，请稍后重试。');
+};
+
+export const enableCloudUser2FA = async (
+  session: CloudSyncSession,
+  payload: {
+    secret: string;
+    otpCode: string;
+  }
+): Promise<CloudUser2FAEnableResponse> => {
+  const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/2fa/totp/enable`, {
+    method: 'POST',
+    headers: authHeaders(session.token),
+    body: JSON.stringify({
+      secret: payload.secret,
+      otpCode: payload.otpCode
+    })
+  });
+  return readJson<CloudUser2FAEnableResponse>(response, '启用 2FA 失败，请稍后重试。');
+};
+
+export const disableCloudUser2FA = async (
+  session: CloudSyncSession,
+  payload: {
+    otpCode?: string;
+    backupCode?: string;
+  }
+): Promise<{ message: string }> => {
+  const endpoint = ensureHttpsEndpoint(session.apiBaseUrl);
+  const response = await withTimeout(`${endpoint}/2fa/totp/disable`, {
+    method: 'POST',
+    headers: authHeaders(session.token),
+    body: JSON.stringify({
+      otpCode: payload.otpCode?.trim() || undefined,
+      backupCode: payload.backupCode?.trim() || undefined
+    })
+  });
+  return readJson<{ message: string }>(response, '关闭 2FA 失败，请稍后重试。');
 };
 
 export const activateCloudLicense = async (

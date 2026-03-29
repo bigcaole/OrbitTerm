@@ -26,6 +26,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - backup_data:/data/exports
     environment:
       PORT: "8080"
       DATABASE_URL: "postgres://orbitterm:change_me_now@postgres:5432/orbitterm_sync?sslmode=disable"
@@ -40,10 +42,17 @@ services:
       ADMIN_USERNAME: "admin"
       ADMIN_PASSWORD: "replace_with_a_strong_password"
       ADMIN_2FA_ENABLED: "false"
-      ADMIN_2FA_CODE: "123456"
+      ADMIN_2FA_METHOD: "totp"
       ADMIN_SESSION_HOURS: "12"
+      BACKUP_AUTO_ENABLED: "false"
+      BACKUP_AUTO_INTERVAL_MINUTES: "1440"
+      BACKUP_AUTO_RETENTION_COUNT: "14"
+      BACKUP_AUTO_OUTPUT_DIR: "/data/exports"
+      BACKUP_AUTO_INCLUDE_AUDIT_LOGS: "false"
+      BACKUP_AUTO_AUDIT_LIMIT: "2000"
     ports:
       - "8080:8080"
 
 volumes:
   postgres_data:
+  backup_data:

@@ -143,8 +143,14 @@ services:
       ADMIN_USERNAME: "admin"
       ADMIN_PASSWORD: "请替换为管理员强密码"
       ADMIN_2FA_ENABLED: "false"
-      ADMIN_2FA_CODE: "123456"
+      ADMIN_2FA_METHOD: "totp"
       ADMIN_SESSION_HOURS: "12"
+      BACKUP_AUTO_ENABLED: "false"
+      BACKUP_AUTO_INTERVAL_MINUTES: "1440"
+      BACKUP_AUTO_RETENTION_COUNT: "14"
+      BACKUP_AUTO_OUTPUT_DIR: "/data/exports"
+      BACKUP_AUTO_INCLUDE_AUDIT_LOGS: "false"
+      BACKUP_AUTO_AUDIT_LIMIT: "2000"
     ports:
       - "127.0.0.1:8080:8080"
 
@@ -189,8 +195,17 @@ docker compose logs -f api
 - `ADMIN_USERNAME`：管理员登录账号。
 - `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH`：管理员密码（二选一，生产建议用哈希）。
 - `ADMIN_2FA_ENABLED`：管理员登录是否强制二次验证码。
-- `ADMIN_2FA_CODE`：管理员二次验证码（开启 2FA 时必填）。
+- `ADMIN_2FA_METHOD`：管理员 2FA 模式，支持 `totp` / `static`。
+- `ADMIN_2FA_TOTP_SECRET`：管理员 TOTP 密钥（Base32，可留空后在管理端页面生成）。
+- `ADMIN_2FA_BACKUP_HASHES_JSON`：管理员恢复码哈希 JSON（可留空）。
+- `ADMIN_2FA_CODE`：静态验证码（仅兼容历史 `static` 模式）。
 - `ADMIN_SESSION_HOURS`：管理员会话有效时长（小时）。
+- `BACKUP_AUTO_ENABLED`：是否启用自动逻辑备份。
+- `BACKUP_AUTO_INTERVAL_MINUTES`：自动备份间隔（分钟）。
+- `BACKUP_AUTO_RETENTION_COUNT`：自动备份保留份数。
+- `BACKUP_AUTO_OUTPUT_DIR`：自动备份输出目录。
+- `BACKUP_AUTO_INCLUDE_AUDIT_LOGS`：自动备份是否包含审计日志。
+- `BACKUP_AUTO_AUDIT_LIMIT`：自动备份审计日志上限条数。
 
 ---
 

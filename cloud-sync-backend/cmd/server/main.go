@@ -38,9 +38,18 @@ type config struct {
 	AdminPasswordHash   string
 	AdminRole           string
 	Admin2FAEnabled     bool
+	Admin2FAMethod      string
+	Admin2FASecret      string
+	Admin2FABackupJSON  string
 	Admin2FACode        string
 	AdminSessionHours   int
 	SetupInitToken      string
+	BackupAutoEnabled   bool
+	BackupIntervalMin   int
+	BackupRetention     int
+	BackupOutputDir     string
+	BackupIncludeAudit  bool
+	BackupAuditLimit    int
 }
 
 type runtimeSettings struct {
@@ -59,6 +68,8 @@ type app struct {
 	adminLimiter    *rateLimiter
 	runtimeMu       sync.RWMutex
 	runtimeSettings runtimeSettings
+	admin2FAMu      sync.Mutex
+	admin2FAReveal  []string
 }
 
 type rateLimiter struct {
@@ -85,12 +96,16 @@ type loginRequest struct {
 	Password       string `json:"password" binding:"required,min=8,max=128"`
 	DeviceName     string `json:"deviceName"`
 	DeviceLocation string `json:"deviceLocation"`
+	OtpCode        string `json:"otpCode"`
+	BackupCode     string `json:"backupCode"`
 }
 
 type authResponse struct {
 	Token           string       `json:"token"`
 	User            authUserInfo `json:"user"`
 	CurrentDeviceID string       `json:"currentDeviceId"`
+	TwoFARequired   bool         `json:"twoFactorRequired,omitempty"`
+	TwoFAMethod     string       `json:"twoFactorMethod,omitempty"`
 }
 
 type authUserInfo struct {
@@ -245,8 +260,13 @@ func main() {
 	accountGroup.POST("/logout/device", a.handleLogoutDevice)
 	accountGroup.POST("/license/activate", a.handleActivateLicense)
 	accountGroup.GET("/license/status", a.handleLicenseStatus)
+	accountGroup.GET("/2fa/status", a.handleUser2FAStatus)
+	accountGroup.POST("/2fa/totp/begin", a.handleUser2FABegin)
+	accountGroup.POST("/2fa/totp/enable", a.handleUser2FAEnable)
+	accountGroup.POST("/2fa/totp/disable", a.handleUser2FADisable)
 
 	a.registerAdminRoutes(router)
+	a.startAutoBackupWorker()
 
 	addr := ":" + cfg.Port
 	log.Printf("OrbitTerm 私有云同步服务已启动: %s", addr)
@@ -319,6 +339,13 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			expires_at TIMESTAMPTZ,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS user_2fa_totp (
+			user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			secret TEXT NOT NULL,
+			backup_code_hashes TEXT[] NOT NULL DEFAULT '{}',
+			enabled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
 			id BIGSERIAL PRIMARY KEY,
 			actor_username TEXT NOT NULL,
@@ -367,6 +394,7 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_sync_license_codes_created_at ON sync_license_codes(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sync_license_codes_used_by_user ON sync_license_codes(used_by_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_sync_entitlements_expires_at ON user_sync_entitlements(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_2fa_totp_enabled_at ON user_2fa_totp(enabled_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(action)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_actor ON admin_audit_logs(actor_username)`,
@@ -399,9 +427,18 @@ func loadConfig() (config, error) {
 		AdminPasswordHash:   strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
 		AdminRole:           normalizeAdminRole(readEnv("ADMIN_ROLE", "superadmin")),
 		Admin2FAEnabled:     readEnvBool("ADMIN_2FA_ENABLED", false),
+		Admin2FAMethod:      strings.TrimSpace(strings.ToLower(readEnv("ADMIN_2FA_METHOD", ""))),
+		Admin2FASecret:      strings.TrimSpace(os.Getenv("ADMIN_2FA_TOTP_SECRET")),
+		Admin2FABackupJSON:  strings.TrimSpace(os.Getenv("ADMIN_2FA_BACKUP_HASHES_JSON")),
 		Admin2FACode:        strings.TrimSpace(os.Getenv("ADMIN_2FA_CODE")),
 		AdminSessionHours:   readEnvInt("ADMIN_SESSION_HOURS", 12),
 		SetupInitToken:      strings.TrimSpace(os.Getenv("SETUP_INIT_TOKEN")),
+		BackupAutoEnabled:   readEnvBool("BACKUP_AUTO_ENABLED", false),
+		BackupIntervalMin:   readEnvInt("BACKUP_AUTO_INTERVAL_MINUTES", 1440),
+		BackupRetention:     readEnvInt("BACKUP_AUTO_RETENTION_COUNT", 14),
+		BackupOutputDir:     strings.TrimSpace(readEnv("BACKUP_AUTO_OUTPUT_DIR", "./data/exports")),
+		BackupIncludeAudit:  readEnvBool("BACKUP_AUTO_INCLUDE_AUDIT_LOGS", false),
+		BackupAuditLimit:    readEnvInt("BACKUP_AUTO_AUDIT_LIMIT", 2000),
 	}
 
 	expireHours := readEnv("JWT_EXPIRE_HOURS", "720")
@@ -429,6 +466,18 @@ func loadConfig() (config, error) {
 	if cfg.AdminSessionHours <= 0 || cfg.AdminSessionHours > 168 {
 		return config{}, errors.New("ADMIN_SESSION_HOURS 必须在 1 到 168 小时之间")
 	}
+	if cfg.BackupIntervalMin <= 0 {
+		return config{}, errors.New("BACKUP_AUTO_INTERVAL_MINUTES 必须为正整数")
+	}
+	if cfg.BackupRetention <= 0 {
+		return config{}, errors.New("BACKUP_AUTO_RETENTION_COUNT 必须为正整数")
+	}
+	if cfg.BackupAuditLimit <= 0 {
+		cfg.BackupAuditLimit = 2000
+	}
+	if strings.TrimSpace(cfg.BackupOutputDir) == "" {
+		cfg.BackupOutputDir = "./data/exports"
+	}
 	if cfg.AdminPasswordHash == "" {
 		adminPassword := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
 		if adminPassword != "" {
@@ -439,8 +488,22 @@ func loadConfig() (config, error) {
 			cfg.AdminPasswordHash = string(hashBytes)
 		}
 	}
-	if cfg.Admin2FAEnabled && cfg.Admin2FACode == "" {
-		return config{}, errors.New("ADMIN_2FA_ENABLED=true 时必须提供 ADMIN_2FA_CODE")
+	if cfg.Admin2FAEnabled {
+		if cfg.Admin2FAMethod == "" {
+			cfg.Admin2FAMethod = "totp"
+		}
+		if cfg.Admin2FAMethod != "totp" && cfg.Admin2FAMethod != "static" {
+			return config{}, errors.New("ADMIN_2FA_METHOD 仅支持 totp 或 static")
+		}
+		if cfg.Admin2FAMethod == "totp" && cfg.Admin2FASecret == "" {
+			if cfg.Admin2FACode == "" {
+				return config{}, errors.New("ADMIN_2FA_ENABLED=true 且使用 TOTP 时必须提供 ADMIN_2FA_TOTP_SECRET（或先通过 /setup 初始化）")
+			}
+			cfg.Admin2FAMethod = "static"
+		}
+		if cfg.Admin2FAMethod == "static" && cfg.Admin2FACode == "" {
+			return config{}, errors.New("ADMIN_2FA_ENABLED=true 且静态模式时必须提供 ADMIN_2FA_CODE")
+		}
 	}
 
 	return cfg, nil
@@ -962,6 +1025,44 @@ func (a *app) handleLogin(c *gin.Context) {
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "账号或密码错误。"})
 		return
+	}
+	twoFARecord, twoFAErr := a.loadUser2FA(c.Request.Context(), userID)
+	if twoFAErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "登录失败，请稍后重试。"})
+		return
+	}
+	if twoFARecord.Enabled {
+		otpValid := false
+		if strings.TrimSpace(req.OtpCode) != "" {
+			result, verifyErr := validateTOTP(twoFARecord.Secret, req.OtpCode, time.Now().UTC())
+			otpValid = verifyErr == nil && result.Valid
+		}
+
+		backupUsed := false
+		if !otpValid && strings.TrimSpace(req.BackupCode) != "" {
+			matched, consumeErr := a.consumeUser2FABackupCode(c.Request.Context(), userID, twoFARecord, req.BackupCode)
+			if consumeErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "登录失败，请稍后重试。"})
+				return
+			}
+			backupUsed = matched
+		}
+
+		if !otpValid && !backupUsed {
+			message := "该账号已启用 2FA，请输入验证码或恢复码。"
+			code := "two_factor_required"
+			if strings.TrimSpace(req.OtpCode) != "" || strings.TrimSpace(req.BackupCode) != "" {
+				message = "2FA 验证失败，请检查验证码或恢复码。"
+				code = "two_factor_invalid"
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"message":           message,
+				"code":              code,
+				"twoFactorMethod":   "totp",
+				"twoFactorRequired": true,
+			})
+			return
+		}
 	}
 
 	meta := extractDeviceMeta(c, req.DeviceName, req.DeviceLocation)

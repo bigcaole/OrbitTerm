@@ -11,7 +11,11 @@ import {
 } from '../../services/ssh';
 import { ORBIT_THEME_PRESETS } from '../../theme/orbitTheme';
 import { useHostStore } from '../../store/useHostStore';
-import { useUiSettingsStore, type CloseWindowAction } from '../../store/useUiSettingsStore';
+import {
+  useUiSettingsStore,
+  type CloseWindowAction,
+  type UiContrastMode
+} from '../../store/useUiSettingsStore';
 import { buildHostKey } from '../../utils/hostKey';
 import { APP_LANGUAGE_OPTIONS, type AppLanguage } from '../../i18n/core';
 import { useI18n } from '../../i18n/useI18n';
@@ -108,6 +112,8 @@ export function SettingsDrawer({
   const autoLockMinutes = useUiSettingsStore((state) => state.autoLockMinutes);
   const closeWindowAction = useUiSettingsStore((state) => state.closeWindowAction);
   const language = useUiSettingsStore((state) => state.language);
+  const uiScalePercent = useUiSettingsStore((state) => state.uiScalePercent);
+  const contrastMode = useUiSettingsStore((state) => state.contrastMode);
   const setTerminalFontSize = useUiSettingsStore((state) => state.setTerminalFontSize);
   const setTerminalFontFamily = useUiSettingsStore((state) => state.setTerminalFontFamily);
   const setTerminalOpacity = useUiSettingsStore((state) => state.setTerminalOpacity);
@@ -120,6 +126,8 @@ export function SettingsDrawer({
   const setAutoLockMinutes = useUiSettingsStore((state) => state.setAutoLockMinutes);
   const setCloseWindowAction = useUiSettingsStore((state) => state.setCloseWindowAction);
   const setLanguage = useUiSettingsStore((state) => state.setLanguage);
+  const setUiScalePercent = useUiSettingsStore((state) => state.setUiScalePercent);
+  const setContrastMode = useUiSettingsStore((state) => state.setContrastMode);
   const cloudSyncSession = useHostStore((state) => state.cloudSyncSession);
   const cloudSyncPolicy = useHostStore((state) => state.cloudSyncPolicy);
   const cloudLicenseStatus = useHostStore((state) => state.cloudLicenseStatus);
@@ -133,6 +141,14 @@ export function SettingsDrawer({
   const updateIdentity = useHostStore((state) => state.updateIdentity);
   const logoutCloudAccount = useHostStore((state) => state.logoutCloudAccount);
   const refreshCloudLicenseStatus = useHostStore((state) => state.refreshCloudLicenseStatus);
+  const cloudUser2FAStatus = useHostStore((state) => state.cloudUser2FAStatus);
+  const cloudUser2FASetup = useHostStore((state) => state.cloudUser2FASetup);
+  const cloudUser2FABackupCodes = useHostStore((state) => state.cloudUser2FABackupCodes);
+  const isUpdatingCloud2FA = useHostStore((state) => state.isUpdatingCloud2FA);
+  const refreshCloudUser2FAStatus = useHostStore((state) => state.refreshCloudUser2FAStatus);
+  const beginCloudUser2FASetup = useHostStore((state) => state.beginCloudUser2FASetup);
+  const confirmEnableCloudUser2FA = useHostStore((state) => state.confirmEnableCloudUser2FA);
+  const disableCloudUser2FA = useHostStore((state) => state.disableCloudUser2FA);
   const activateCloudLicenseCode = useHostStore((state) => state.activateCloudLicenseCode);
   const syncPullFromCloud = useHostStore((state) => state.syncPullFromCloud);
   const vaultVersion = useHostStore((state) => state.vaultVersion);
@@ -150,6 +166,9 @@ export function SettingsDrawer({
   const [isDeployingKey, setIsDeployingKey] = useState<boolean>(false);
   const [isExportingKey, setIsExportingKey] = useState<boolean>(false);
   const [licenseCodeInput, setLicenseCodeInput] = useState<string>('');
+  const [cloud2FAEnableOtpInput, setCloud2FAEnableOtpInput] = useState<string>('');
+  const [cloud2FADisableOtpInput, setCloud2FADisableOtpInput] = useState<string>('');
+  const [cloud2FADisableBackupInput, setCloud2FADisableBackupInput] = useState<string>('');
 
   useEffect(() => {
     if (!open || !cloudSyncSession) {
@@ -157,7 +176,8 @@ export function SettingsDrawer({
     }
     void loadCloudDevices();
     void refreshCloudLicenseStatus();
-  }, [cloudSyncSession, loadCloudDevices, open]);
+    void refreshCloudUser2FAStatus();
+  }, [cloudSyncSession, loadCloudDevices, open, refreshCloudLicenseStatus, refreshCloudUser2FAStatus]);
 
   useEffect(() => {
     if (identities.length === 0) {
@@ -639,6 +659,46 @@ export function SettingsDrawer({
           )}
 
           {showSettingsCategory && (
+            <section className="space-y-2 rounded-xl border border-white/60 bg-white/60 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">无障碍</h3>
+              <p className="text-xs text-slate-600">支持界面缩放与高对比度模式，长时间使用更舒适。</p>
+
+              <div className="flex items-center justify-between text-xs text-slate-600">
+                <span>界面缩放</span>
+                <span>{uiScalePercent}%</span>
+              </div>
+              <input
+                className="w-full accent-[#2f6df4]"
+                max={130}
+                min={85}
+                onChange={(event) => {
+                  setUiScalePercent(Number(event.target.value));
+                }}
+                step={1}
+                type="range"
+                value={uiScalePercent}
+              />
+
+              <div className="space-y-1.5 pt-1">
+                <label className="text-xs text-slate-600" htmlFor="contrast-mode">
+                  对比度档位
+                </label>
+                <select
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+                  id="contrast-mode"
+                  onChange={(event) => {
+                    setContrastMode(event.target.value as UiContrastMode);
+                  }}
+                  value={contrastMode}
+                >
+                  <option value="standard">标准对比度</option>
+                  <option value="high">高对比度</option>
+                </select>
+              </div>
+            </section>
+          )}
+
+          {showSettingsCategory && (
             <section
             className="scroll-mt-20 space-y-2 rounded-xl border border-white/60 bg-white/60 p-3"
             id="settings-security"
@@ -997,6 +1057,145 @@ export function SettingsDrawer({
                 </div>
               </div>
             )}
+
+            {cloudSyncSession ? (
+              <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-slate-800">账号 2FA（TOTP）</p>
+                  <button
+                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={isUpdatingCloud2FA}
+                    onClick={() => {
+                      void refreshCloudUser2FAStatus();
+                    }}
+                    type="button"
+                  >
+                    刷新
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-600">
+                  状态：{cloudUser2FAStatus?.enabled ? '已启用' : '未启用'}
+                  {cloudUser2FAStatus?.enabled ? ` ｜ 恢复码剩余 ${cloudUser2FAStatus.backupCodesRemaining}` : ''}
+                </p>
+
+                {!cloudUser2FAStatus?.enabled ? (
+                  <div className="mt-2 space-y-2">
+                    {!cloudUser2FASetup ? (
+                      <button
+                        className="rounded-lg border border-[#2f6df4] bg-[#2f6df4] px-3 py-2 text-xs font-semibold text-white hover:bg-[#245ad0] disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={isUpdatingCloud2FA}
+                        onClick={() => {
+                          void beginCloudUser2FASetup().catch((error) => {
+                            const fallback = '生成 2FA 密钥失败，请稍后重试。';
+                            const message = error instanceof Error ? error.message : fallback;
+                            toast.error(message || fallback);
+                          });
+                        }}
+                        type="button"
+                      >
+                        {isUpdatingCloud2FA ? '生成中...' : '开始启用 2FA'}
+                      </button>
+                    ) : (
+                      <div className="space-y-2 rounded-lg border border-violet-300 bg-white px-3 py-2">
+                        <p className="text-[11px] text-slate-700">TOTP 密钥：{cloudUser2FASetup.secret}</p>
+                        <p className="text-[11px] text-slate-700">otpauth URI：{cloudUser2FASetup.otpauthUri}</p>
+                        <input
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-300"
+                          onChange={(event) => {
+                            setCloud2FAEnableOtpInput(event.target.value);
+                          }}
+                          placeholder="认证器当前 6 位验证码"
+                          type="text"
+                          value={cloud2FAEnableOtpInput}
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            className="rounded-lg border border-[#2f6df4] bg-[#2f6df4] px-3 py-2 text-xs font-semibold text-white hover:bg-[#245ad0] disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={isUpdatingCloud2FA}
+                            onClick={() => {
+                              void confirmEnableCloudUser2FA(cloud2FAEnableOtpInput)
+                                .then(() => {
+                                  setCloud2FAEnableOtpInput('');
+                                })
+                                .catch((error) => {
+                                  const fallback = '启用 2FA 失败，请稍后重试。';
+                                  const message = error instanceof Error ? error.message : fallback;
+                                  toast.error(message || fallback);
+                                });
+                            }}
+                            type="button"
+                          >
+                            {isUpdatingCloud2FA ? '启用中...' : '确认启用'}
+                          </button>
+                          <button
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                            disabled={isUpdatingCloud2FA}
+                            onClick={() => {
+                              setCloud2FAEnableOtpInput('');
+                            }}
+                            type="button"
+                          >
+                            清空验证码
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    <input
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-300"
+                      onChange={(event) => {
+                        setCloud2FADisableOtpInput(event.target.value);
+                      }}
+                      placeholder="关闭 2FA：输入当前验证码（优先）"
+                      type="text"
+                      value={cloud2FADisableOtpInput}
+                    />
+                    <input
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-300"
+                      onChange={(event) => {
+                        setCloud2FADisableBackupInput(event.target.value);
+                      }}
+                      placeholder="或输入恢复码（例如 ABCD-1234）"
+                      type="text"
+                      value={cloud2FADisableBackupInput}
+                    />
+                    <button
+                      className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={isUpdatingCloud2FA}
+                      onClick={() => {
+                        void disableCloudUser2FA({
+                          otpCode: cloud2FADisableOtpInput,
+                          backupCode: cloud2FADisableBackupInput
+                        })
+                          .then(() => {
+                            setCloud2FADisableOtpInput('');
+                            setCloud2FADisableBackupInput('');
+                          })
+                          .catch((error) => {
+                            const fallback = '关闭 2FA 失败，请稍后重试。';
+                            const message = error instanceof Error ? error.message : fallback;
+                            toast.error(message || fallback);
+                          });
+                      }}
+                      type="button"
+                    >
+                      {isUpdatingCloud2FA ? '处理中...' : '关闭 2FA'}
+                    </button>
+                  </div>
+                )}
+
+                {cloudUser2FABackupCodes.length > 0 ? (
+                  <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+                    <p className="text-[11px] font-semibold text-amber-800">恢复码（仅本次展示）</p>
+                    <p className="mt-1 text-[11px] text-amber-700">
+                      {cloudUser2FABackupCodes.join('  ')}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             </section>
           )}
 

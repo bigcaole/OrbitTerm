@@ -18,10 +18,14 @@ import {
 } from '../services/vault';
 import {
   activateCloudLicense,
+  beginCloudUser2FA,
   CloudSyncConflictError,
   CloudSyncRequestError,
   clearCloudSyncSession,
+  disableCloudUser2FA,
+  enableCloudUser2FA,
   fetchCloudSyncPolicy,
+  getCloudUser2FAStatus,
   getCloudLicenseStatus,
   listCloudDevices,
   loginCloudSync,
@@ -34,6 +38,8 @@ import {
   readCloudSyncCursor,
   registerCloudSync,
   writeCloudSyncCursor,
+  type CloudUser2FABeginResponse,
+  type CloudUser2FAStatus,
   type CloudLicenseStatus,
   type CloudDeviceItem,
   type CloudSyncPolicy,
@@ -92,6 +98,10 @@ interface HostState {
   cloudSyncSession: CloudSyncSession | null;
   cloudSyncPolicy: CloudSyncPolicy | null;
   cloudLicenseStatus: CloudLicenseStatus | null;
+  cloudUser2FAStatus: CloudUser2FAStatus | null;
+  cloudUser2FASetup: CloudUser2FABeginResponse | null;
+  cloudUser2FABackupCodes: string[];
+  isUpdatingCloud2FA: boolean;
   isActivatingCloudLicense: boolean;
   cloudSyncVersion: number | null;
   cloudSyncLastAt: string | null;
@@ -111,9 +121,21 @@ interface HostState {
   unlockVault: (masterPassword: string) => Promise<void>;
   lockVault: () => Promise<void>;
   registerCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
-  loginCloudAccount: (apiBaseUrl: string, email: string, password: string) => Promise<void>;
+  loginCloudAccount: (
+    apiBaseUrl: string,
+    email: string,
+    password: string,
+    options?: {
+      otpCode?: string;
+      backupCode?: string;
+    }
+  ) => Promise<void>;
   logoutCloudAccount: () => void;
   refreshCloudLicenseStatus: () => Promise<void>;
+  refreshCloudUser2FAStatus: () => Promise<void>;
+  beginCloudUser2FASetup: () => Promise<void>;
+  confirmEnableCloudUser2FA: (otpCode: string) => Promise<void>;
+  disableCloudUser2FA: (payload: { otpCode?: string; backupCode?: string }) => Promise<void>;
   activateCloudLicenseCode: (code: string) => Promise<void>;
   loadCloudDevices: () => Promise<void>;
   revokeCloudDevice: (deviceId: string) => Promise<void>;
@@ -804,6 +826,10 @@ export const useHostStore = create<HostState>((set, get) => ({
   cloudSyncSession: initialCloudSyncSession,
   cloudSyncPolicy: initialCloudSyncPolicy,
   cloudLicenseStatus: null,
+  cloudUser2FAStatus: null,
+  cloudUser2FASetup: null,
+  cloudUser2FABackupCodes: [],
+  isUpdatingCloud2FA: false,
   isActivatingCloudLicense: false,
   cloudSyncVersion: null,
   cloudSyncLastAt: null,
@@ -853,6 +879,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         cloudSyncSession: cloudSession,
         cloudSyncPolicy: cloudPolicy,
         cloudLicenseStatus: null,
+        cloudUser2FAStatus: null,
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
         cloudSyncVersion: cloudCursor?.version ?? null,
         cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
@@ -867,7 +897,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         void Promise.all([
           get().syncPullFromCloud({ source: 'auto' }),
           get().loadCloudDevices(),
-          get().refreshCloudLicenseStatus()
+          get().refreshCloudLicenseStatus(),
+          get().refreshCloudUser2FAStatus()
         ]);
       }
     } catch (error) {
@@ -882,6 +913,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         vaultUpdatedAt: null,
         cloudSyncPolicy: readCloudSyncPolicy(),
         cloudLicenseStatus: null,
+        cloudUser2FAStatus: null,
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
         cloudSyncVersion: null,
         cloudSyncLastAt: null,
         cloudDevices: [],
@@ -917,6 +952,10 @@ export const useHostStore = create<HostState>((set, get) => ({
       vaultVersion: null,
       vaultUpdatedAt: null,
       cloudLicenseStatus: null,
+      cloudUser2FAStatus: null,
+      cloudUser2FASetup: null,
+      cloudUser2FABackupCodes: [],
+      isUpdatingCloud2FA: false,
       cloudSyncVersion: null,
       cloudSyncLastAt: null,
       cloudDevices: [],
@@ -943,6 +982,10 @@ export const useHostStore = create<HostState>((set, get) => ({
         cloudSyncSession: session,
         cloudSyncPolicy: policy,
         cloudLicenseStatus: null,
+        cloudUser2FAStatus: null,
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
         cloudSyncVersion: cloudCursor?.version ?? null,
         cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
@@ -954,7 +997,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         await Promise.all([
           get().syncPullFromCloud({ source: 'auto' }),
           get().loadCloudDevices(),
-          get().refreshCloudLicenseStatus()
+          get().refreshCloudLicenseStatus(),
+          get().refreshCloudUser2FAStatus()
         ]);
       }
       toast.success('私有云账号注册成功');
@@ -968,16 +1012,28 @@ export const useHostStore = create<HostState>((set, get) => ({
       throw new Error(message || fallback);
     }
   },
-  loginCloudAccount: async (apiBaseUrl, email, password) => {
+  loginCloudAccount: async (
+    apiBaseUrl,
+    email,
+    password,
+    options?: {
+      otpCode?: string;
+      backupCode?: string;
+    }
+  ) => {
     set({ isSyncingCloud: true, cloudSyncError: null });
     try {
-      const session = await loginCloudSync(apiBaseUrl, email, password);
+      const session = await loginCloudSync(apiBaseUrl, email, password, options);
       const policy = readCloudSyncPolicy();
       const cloudCursor = readCloudSyncCursor(session);
       set({
         cloudSyncSession: session,
         cloudSyncPolicy: policy,
         cloudLicenseStatus: null,
+        cloudUser2FAStatus: null,
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
         cloudSyncVersion: cloudCursor?.version ?? null,
         cloudSyncLastAt: cloudCursor?.updatedAt ?? null,
         cloudDevices: [],
@@ -989,7 +1045,8 @@ export const useHostStore = create<HostState>((set, get) => ({
         await Promise.all([
           get().syncPullFromCloud({ source: 'auto' }),
           get().loadCloudDevices(),
-          get().refreshCloudLicenseStatus()
+          get().refreshCloudLicenseStatus(),
+          get().refreshCloudUser2FAStatus()
         ]);
       }
       toast.success('私有云同步已连接');
@@ -1000,6 +1057,9 @@ export const useHostStore = create<HostState>((set, get) => ({
         isSyncingCloud: false,
         cloudSyncError: message || fallback
       });
+      if (error instanceof Error) {
+        throw error;
+      }
       throw new Error(message || fallback);
     }
   },
@@ -1008,6 +1068,10 @@ export const useHostStore = create<HostState>((set, get) => ({
     set({
       cloudSyncSession: null,
       cloudLicenseStatus: null,
+      cloudUser2FAStatus: null,
+      cloudUser2FASetup: null,
+      cloudUser2FABackupCodes: [],
+      isUpdatingCloud2FA: false,
       isActivatingCloudLicense: false,
       cloudSyncVersion: null,
       cloudSyncLastAt: null,
@@ -1042,6 +1106,129 @@ export const useHostStore = create<HostState>((set, get) => ({
         cloudLicenseStatus: null,
         cloudSyncError: message || fallback
       });
+    }
+  },
+  refreshCloudUser2FAStatus: async () => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      set({
+        cloudUser2FAStatus: null,
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: []
+      });
+      return;
+    }
+    try {
+      const status = await getCloudUser2FAStatus(session);
+      set({
+        cloudSyncSession: session,
+        cloudUser2FAStatus: status,
+        cloudSyncError: null
+      });
+    } catch (error) {
+      const fallback = '读取 2FA 状态失败，请稍后重试。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        cloudSyncError: message || fallback
+      });
+    }
+  },
+  beginCloudUser2FASetup: async () => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      throw new Error('请先登录同步账号。');
+    }
+    set({ isUpdatingCloud2FA: true, cloudSyncError: null });
+    try {
+      const setup = await beginCloudUser2FA(session);
+      set({
+        cloudSyncSession: session,
+        cloudUser2FASetup: setup,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
+        cloudSyncError: null
+      });
+    } catch (error) {
+      const fallback = '生成 2FA 密钥失败，请稍后重试。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        isUpdatingCloud2FA: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
+  },
+  confirmEnableCloudUser2FA: async (otpCode) => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    const setup = state.cloudUser2FASetup;
+    if (!session || !setup || state.appView !== 'dashboard') {
+      throw new Error('请先生成 2FA 密钥。');
+    }
+    if (!otpCode.trim()) {
+      throw new Error('请输入 2FA 验证码。');
+    }
+    set({ isUpdatingCloud2FA: true, cloudSyncError: null });
+    try {
+      const result = await enableCloudUser2FA(session, {
+        secret: setup.secret,
+        otpCode
+      });
+      set({
+        cloudSyncSession: session,
+        cloudUser2FAStatus: {
+          enabled: true,
+          method: setup.method || 'totp',
+          backupCodesRemaining: result.backupCodes.length
+        },
+        cloudUser2FABackupCodes: result.backupCodes,
+        cloudUser2FASetup: null,
+        isUpdatingCloud2FA: false,
+        cloudSyncError: null
+      });
+      toast.success(result.message || '2FA 已启用。');
+    } catch (error) {
+      const fallback = '启用 2FA 失败，请稍后重试。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        isUpdatingCloud2FA: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
+    }
+  },
+  disableCloudUser2FA: async (payload) => {
+    const state = get();
+    const session = state.cloudSyncSession ?? readCloudSyncSession();
+    if (!session || state.appView !== 'dashboard') {
+      throw new Error('请先登录同步账号。');
+    }
+    set({ isUpdatingCloud2FA: true, cloudSyncError: null });
+    try {
+      const result = await disableCloudUser2FA(session, payload);
+      set({
+        cloudSyncSession: session,
+        cloudUser2FAStatus: {
+          enabled: false,
+          method: 'totp',
+          backupCodesRemaining: 0
+        },
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
+        cloudSyncError: null
+      });
+      toast.success(result.message || '2FA 已关闭。');
+    } catch (error) {
+      const fallback = '关闭 2FA 失败，请稍后重试。';
+      const message = extractErrorMessage(error, fallback);
+      set({
+        isUpdatingCloud2FA: false,
+        cloudSyncError: message || fallback
+      });
+      throw new Error(message || fallback);
     }
   },
   activateCloudLicenseCode: async (code) => {
@@ -1119,6 +1306,11 @@ export const useHostStore = create<HostState>((set, get) => ({
         clearCloudSyncSession();
         set({
           cloudSyncSession: null,
+          cloudLicenseStatus: null,
+          cloudUser2FAStatus: null,
+          cloudUser2FASetup: null,
+          cloudUser2FABackupCodes: [],
+          isUpdatingCloud2FA: false,
           cloudSyncVersion: null,
           cloudSyncLastAt: null,
           cloudDevices: [],
@@ -1160,6 +1352,11 @@ export const useHostStore = create<HostState>((set, get) => ({
       clearCloudSyncSession();
       set({
         cloudSyncSession: null,
+        cloudLicenseStatus: null,
+        cloudUser2FAStatus: null,
+        cloudUser2FASetup: null,
+        cloudUser2FABackupCodes: [],
+        isUpdatingCloud2FA: false,
         cloudSyncVersion: null,
         cloudSyncLastAt: null,
         cloudDevices: [],

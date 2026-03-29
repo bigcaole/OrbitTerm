@@ -20,7 +20,36 @@ import (
 const (
 	adminSessionCookieName = "orbitterm_admin_session"
 	adminSessionIssuer     = "orbitterm-admin"
+	adminPermDashboardView = "dashboard.view"
+	adminPermAuditView     = "audit.view"
+	adminPermSettingsWrite = "settings.write"
+	adminPermSecurityWrite = "security.write"
+	adminPermDeviceRevoke  = "device.revoke"
+	adminPermLicenseManage = "license.manage"
+	adminPermBackupExport  = "backup.export"
+	adminPermBackupImport  = "backup.import"
 )
+
+var adminRolePermissions = map[string]map[string]struct{}{
+	"superadmin": {
+		adminPermDashboardView: {},
+		adminPermAuditView:     {},
+		adminPermSettingsWrite: {},
+		adminPermSecurityWrite: {},
+		adminPermDeviceRevoke:  {},
+		adminPermLicenseManage: {},
+		adminPermBackupExport:  {},
+		adminPermBackupImport:  {},
+	},
+	"admin": {
+		adminPermDashboardView: {},
+		adminPermAuditView:     {},
+		adminPermSettingsWrite: {},
+		adminPermDeviceRevoke:  {},
+		adminPermLicenseManage: {},
+		adminPermBackupExport:  {},
+	},
+}
 
 type adminSessionClaims struct {
 	jwt.RegisteredClaims
@@ -33,6 +62,7 @@ type adminDashboardMetrics struct {
 	ActiveDevices    int64
 	RevokedDevices   int64
 	UsersWithVault   int64
+	ExpiringLicenses int64
 	LatestSyncAt     string
 	LatestSyncAtRaw  time.Time
 	CurrentServerUTC string
@@ -96,7 +126,11 @@ type adminPageData struct {
 	AdminUsername            string
 	AdminRole                string
 	Admin2FAEnabled          bool
-	Admin2FACodeMasked       string
+	Admin2FAMethod           string
+	Admin2FASecret           string
+	Admin2FAOtpauthURI       string
+	Admin2FABackupRemaining  int
+	Admin2FAFreshBackupCodes []string
 	Runtime                  runtimeSettings
 	Metrics                  adminDashboardMetrics
 	Users                    []adminUserRow
@@ -312,8 +346,8 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
           <input type="password" name="password" autocomplete="current-password" required />
         </label>
         {{ if .Admin2FAEnabled }}
-        <label>2FA 验证码
-          <input type="text" name="otp" autocomplete="one-time-code" minlength="6" maxlength="8" required />
+        <label>2FA 验证码 / 恢复码
+          <input type="text" name="otp" autocomplete="one-time-code" minlength="6" maxlength="32" required />
         </label>
         {{ end }}
         <button class="btn" type="submit">登录管理台</button>
@@ -345,6 +379,7 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
       <div class="card"><h3>在线设备</h3><div class="metric-number ok">{{ .Metrics.ActiveDevices }}</div></div>
       <div class="card"><h3>已撤销设备</h3><div class="metric-number">{{ .Metrics.RevokedDevices }}</div></div>
       <div class="card"><h3>已有云端金库</h3><div class="metric-number">{{ .Metrics.UsersWithVault }}</div></div>
+      <div class="card"><h3>7天内到期授权</h3><div class="metric-number danger">{{ .Metrics.ExpiringLicenses }}</div></div>
       <div class="card"><h3>最近同步时间</h3><div class="metric-number" style="font-size:16px">{{ .Metrics.LatestSyncAt }}</div></div>
     </div>
 
@@ -476,18 +511,39 @@ var adminPageTemplate = template.Must(template.New("admin-page").Parse(`<!doctyp
         <p><span class="pill">管理员角色</span> {{ .AdminRole }}</p>
         <p class="spacer"></p>
         <p><span class="pill">2FA</span> {{ if .Admin2FAEnabled }}已开启{{ else }}未开启{{ end }}</p>
-        <p class="muted">当前验证码：{{ if .Admin2FAEnabled }}{{ .Admin2FACodeMasked }}{{ else }}未启用{{ end }}</p>
+        <p class="muted">
+          当前模式：{{ if .Admin2FAEnabled }}{{ if .Admin2FAMethod }}{{ .Admin2FAMethod }}{{ else }}totp{{ end }}{{ else }}未启用{{ end }}。
+          {{ if .Admin2FAEnabled }}恢复码剩余：{{ .Admin2FABackupRemaining }}{{ end }}
+        </p>
+        {{ if and .Admin2FAEnabled .Admin2FASecret }}
+        <p class="muted">TOTP 密钥：{{ .Admin2FASecret }}</p>
+        <p class="muted">otpauth URI：{{ .Admin2FAOtpauthURI }}</p>
+        <p class="muted">请在认证器 App 手动添加以上密钥或 URI，并立即验证。</p>
+        {{ end }}
         <div class="spacer"></div>
         <form method="post" action="/admin/security" class="fields">
-          <label class="row">
-            <span>启用管理员 2FA</span>
-            <input type="checkbox" name="admin_2fa_enabled" value="true" {{ if .Admin2FAEnabled }}checked{{ end }} />
+          {{ if .Admin2FAEnabled }}
+          <label>输入当前验证码/恢复码（关闭 2FA 时必填）
+            <input type="text" name="admin_2fa_token" maxlength="32" />
           </label>
-          <label>2FA 验证码（6-16位，留空则沿用当前）
-            <input type="text" name="admin_2fa_code" maxlength="16" />
-          </label>
-          <button class="btn" type="submit">保存 2FA 安全策略</button>
+          <div class="actions">
+            <button class="btn" type="submit" name="admin_2fa_action" value="rotate">重新生成 TOTP 密钥</button>
+            <button class="btn btn-danger" type="submit" name="admin_2fa_action" value="disable">关闭 2FA</button>
+          </div>
+          {{ else }}
+          <button class="btn" type="submit" name="admin_2fa_action" value="enable">启用 TOTP 2FA</button>
+          {{ end }}
         </form>
+        {{ if .Admin2FAFreshBackupCodes }}
+        <div class="spacer"></div>
+        <div class="notice">
+          <strong>恢复码（仅本次展示）</strong>
+          <p class="muted" style="margin-top:6px">请立即离线保存，单个恢复码只能使用一次：</p>
+          <p style="font-size:12px; margin-top:6px; word-break:break-all;">
+            {{ range .Admin2FAFreshBackupCodes }}{{ . }} {{ end }}
+          </p>
+        </div>
+        {{ end }}
         <div class="spacer"></div>
         <p><span class="pill">会话策略</span> Cookie + JWT（HttpOnly / SameSite=Lax）</p>
         <p class="muted">会话时长由 ADMIN_SESSION_HOURS 决定。</p>
@@ -593,30 +649,30 @@ func (a *app) registerAdminRoutes(router *gin.Engine) {
 	adminGroup := router.Group("/admin")
 	adminGroup.Use(a.adminAuthMiddleware())
 	adminGroup.POST("/logout", a.handleAdminLogout)
-	adminGroup.GET("/audit", a.handleAdminAuditPage)
-	adminGroup.POST("/settings", a.requireAdminRole("superadmin", "admin"), a.handleAdminUpdateSettings)
-	adminGroup.POST("/security", a.requireAdminRole("superadmin"), a.handleAdminUpdateSecurity)
-	adminGroup.POST("/device/revoke", a.requireAdminRole("superadmin", "admin"), a.handleAdminRevokeDevice)
+	adminGroup.GET("/audit", a.requireAdminPermission(adminPermAuditView), a.handleAdminAuditPage)
+	adminGroup.POST("/settings", a.requireAdminPermission(adminPermSettingsWrite), a.handleAdminUpdateSettings)
+	adminGroup.POST("/security", a.requireAdminPermission(adminPermSecurityWrite), a.handleAdminUpdateSecurity)
+	adminGroup.POST("/device/revoke", a.requireAdminPermission(adminPermDeviceRevoke), a.handleAdminRevokeDevice)
 	adminGroup.POST(
 		"/user/revoke-all",
-		a.requireAdminRole("superadmin", "admin"),
+		a.requireAdminPermission(adminPermDeviceRevoke),
 		a.handleAdminRevokeAllUserDevices,
 	)
-	adminGroup.GET("/licenses", a.handleAdminLicensePage)
+	adminGroup.GET("/licenses", a.requireAdminPermission(adminPermLicenseManage), a.handleAdminLicensePage)
 	adminGroup.POST(
 		"/licenses/generate",
-		a.requireAdminRole("superadmin", "admin"),
+		a.requireAdminPermission(adminPermLicenseManage),
 		a.handleAdminGenerateLicenseCodes,
 	)
 	adminGroup.POST(
 		"/licenses/disable",
-		a.requireAdminRole("superadmin", "admin"),
+		a.requireAdminPermission(adminPermLicenseManage),
 		a.handleAdminDisableLicenseCode,
 	)
-	adminGroup.GET("/backup", a.handleAdminBackupPage)
-	adminGroup.GET("/backup/export", a.requireAdminRole("superadmin", "admin"), a.handleAdminBackupExport)
-	adminGroup.GET("/backup/export/sql", a.requireAdminRole("superadmin"), a.handleAdminBackupExportSQL)
-	adminGroup.POST("/backup/import", a.requireAdminRole("superadmin"), a.handleAdminBackupImport)
+	adminGroup.GET("/backup", a.requireAdminPermission(adminPermBackupExport), a.handleAdminBackupPage)
+	adminGroup.GET("/backup/export", a.requireAdminPermission(adminPermBackupExport), a.handleAdminBackupExport)
+	adminGroup.GET("/backup/export/sql", a.requireAdminPermission(adminPermBackupImport), a.handleAdminBackupExportSQL)
+	adminGroup.POST("/backup/import", a.requireAdminPermission(adminPermBackupImport), a.handleAdminBackupImport)
 }
 
 func (a *app) buildAdminSessionToken() (string, error) {
@@ -714,6 +770,40 @@ func (a *app) requireAdminRole(allowedRoles ...string) gin.HandlerFunc {
 	}
 }
 
+func hasAdminPermission(role string, permission string) bool {
+	normalizedRole := normalizeAdminRole(role)
+	permission = strings.TrimSpace(permission)
+	if permission == "" {
+		return false
+	}
+	permissions, ok := adminRolePermissions[normalizedRole]
+	if !ok {
+		return false
+	}
+	_, exists := permissions[permission]
+	return exists
+}
+
+func (a *app) requireAdminPermission(permission string) gin.HandlerFunc {
+	required := strings.TrimSpace(permission)
+	return func(c *gin.Context) {
+		role := normalizeAdminRole(c.GetString("adminRole"))
+		if hasAdminPermission(role, required) {
+			c.Next()
+			return
+		}
+		a.writeAdminAuditFromRequest(
+			c,
+			"admin.permission.denied",
+			c.FullPath(),
+			"forbidden",
+			"missing permission: "+required,
+		)
+		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("当前账号权限不足，无法执行该操作。"))
+		c.Abort()
+	}
+}
+
 func (a *app) handleAdminPage(c *gin.Context) {
 	if !a.isSetupComplete() {
 		c.Redirect(http.StatusFound, "/setup")
@@ -746,14 +836,25 @@ func (a *app) handleAdminPage(c *gin.Context) {
 
 	metrics, metricsErr := a.loadAdminMetrics(c.Request.Context())
 	if metricsErr != nil {
+		admin2FAMethod := strings.TrimSpace(strings.ToLower(a.cfg.Admin2FAMethod))
+		if admin2FAMethod == "" && strings.TrimSpace(a.cfg.Admin2FASecret) != "" {
+			admin2FAMethod = "totp"
+		}
+		admin2FAOtpauthURI := ""
+		if strings.TrimSpace(a.cfg.Admin2FASecret) != "" {
+			admin2FAOtpauthURI = buildTOTPURI(a.cfg.AdminUsername, a.cfg.Admin2FASecret)
+		}
 		a.renderAdminPage(c, adminPageData{
-			Authenticated:      true,
-			AdminUsername:      a.cfg.AdminUsername,
-			AdminRole:          normalizeAdminRole(claims.Role),
-			Admin2FAEnabled:    a.cfg.Admin2FAEnabled,
-			Admin2FACodeMasked: strings.Repeat("*", 6),
-			Notice:             notice,
-			Error:              "读取统计信息失败，请稍后刷新。",
+			Authenticated:           true,
+			AdminUsername:           a.cfg.AdminUsername,
+			AdminRole:               normalizeAdminRole(claims.Role),
+			Admin2FAEnabled:         a.cfg.Admin2FAEnabled,
+			Admin2FAMethod:          admin2FAMethod,
+			Admin2FASecret:          strings.TrimSpace(a.cfg.Admin2FASecret),
+			Admin2FAOtpauthURI:      admin2FAOtpauthURI,
+			Admin2FABackupRemaining: len(parseBackupHashesJSON(a.cfg.Admin2FABackupJSON)),
+			Notice:                  notice,
+			Error:                   "读取统计信息失败，请稍后刷新。",
 		})
 		return
 	}
@@ -789,18 +890,20 @@ func (a *app) handleAdminPage(c *gin.Context) {
 	clientDefaultSyncDomain := strings.TrimSpace(adminSettings[settingClientDefaultSyncDomain])
 	clientSyncDomainLocked := parseBoolString(adminSettings[settingClientSyncDomainLocked], false)
 	clientHideSyncDomainEdit := parseBoolString(adminSettings[settingClientHideSyncDomainEdit], false)
-	admin2FACodeMasked := "未设置"
-	if a.cfg.Admin2FAEnabled {
-		codeLen := len(strings.TrimSpace(a.cfg.Admin2FACode))
-		if codeLen <= 0 {
-			admin2FACodeMasked = "未设置"
-		} else {
-			if codeLen > 8 {
-				codeLen = 8
-			}
-			admin2FACodeMasked = strings.Repeat("*", codeLen)
+	admin2FAMethod := strings.TrimSpace(strings.ToLower(a.cfg.Admin2FAMethod))
+	if admin2FAMethod == "" {
+		if strings.TrimSpace(a.cfg.Admin2FASecret) != "" {
+			admin2FAMethod = "totp"
+		} else if strings.TrimSpace(a.cfg.Admin2FACode) != "" {
+			admin2FAMethod = "static"
 		}
 	}
+	admin2FAOtpauthURI := ""
+	if a.cfg.Admin2FAEnabled && admin2FAMethod == "totp" && strings.TrimSpace(a.cfg.Admin2FASecret) != "" {
+		admin2FAOtpauthURI = buildTOTPURI(a.cfg.AdminUsername, a.cfg.Admin2FASecret)
+	}
+	adminBackupRemaining := len(parseBackupHashesJSON(a.cfg.Admin2FABackupJSON))
+	freshBackupCodes := a.pullAdmin2FAFreshBackupCodes()
 	a.renderAdminPage(c, adminPageData{
 		Authenticated:            true,
 		Notice:                   notice,
@@ -808,7 +911,11 @@ func (a *app) handleAdminPage(c *gin.Context) {
 		AdminUsername:            a.cfg.AdminUsername,
 		AdminRole:                normalizeAdminRole(claims.Role),
 		Admin2FAEnabled:          a.cfg.Admin2FAEnabled,
-		Admin2FACodeMasked:       admin2FACodeMasked,
+		Admin2FAMethod:           admin2FAMethod,
+		Admin2FASecret:           strings.TrimSpace(a.cfg.Admin2FASecret),
+		Admin2FAOtpauthURI:       admin2FAOtpauthURI,
+		Admin2FABackupRemaining:  adminBackupRemaining,
+		Admin2FAFreshBackupCodes: freshBackupCodes,
 		Runtime:                  currentRuntime,
 		Metrics:                  metrics,
 		Users:                    users,
@@ -832,6 +939,32 @@ func (a *app) renderAdminPage(c *gin.Context, payload adminPageData) {
 		return
 	}
 	c.Data(http.StatusOK, "text/html; charset=utf-8", html.Bytes())
+}
+
+func (a *app) setAdmin2FAFreshBackupCodes(codes []string) {
+	a.admin2FAMu.Lock()
+	defer a.admin2FAMu.Unlock()
+	next := make([]string, 0, len(codes))
+	for _, code := range codes {
+		normalized := strings.TrimSpace(code)
+		if normalized == "" {
+			continue
+		}
+		next = append(next, normalized)
+	}
+	a.admin2FAReveal = next
+}
+
+func (a *app) pullAdmin2FAFreshBackupCodes() []string {
+	a.admin2FAMu.Lock()
+	defer a.admin2FAMu.Unlock()
+	if len(a.admin2FAReveal) == 0 {
+		return nil
+	}
+	result := make([]string, len(a.admin2FAReveal))
+	copy(result, a.admin2FAReveal)
+	a.admin2FAReveal = nil
+	return result
 }
 
 func (a *app) handleAdminLogin(c *gin.Context) {
@@ -859,10 +992,24 @@ func (a *app) handleAdminLogin(c *gin.Context) {
 		return
 	}
 	if a.cfg.Admin2FAEnabled {
-		if otp == "" || otp != a.cfg.Admin2FACode {
+		valid, mode := validateAdmin2FA(a.cfg, otp, time.Now().UTC())
+		if !valid {
 			a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "invalid 2fa")
 			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("2FA 验证失败，请检查验证码。"))
 			return
+		}
+		if mode == "backup" {
+			consumed, consumeErr := a.consumeAdminBackupCodeIfMatched(otp)
+			if consumeErr != nil {
+				a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "consume backup code failed")
+				c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("2FA 验证失败，请稍后重试。"))
+				return
+			}
+			if !consumed {
+				a.writeAdminAuditFromRequest(c, "admin.login", "console", "failed", "backup code already used")
+				c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("2FA 恢复码已失效，请改用验证码。"))
+				return
+			}
 		}
 	}
 
@@ -992,43 +1139,90 @@ func (a *app) handleAdminUpdateSettings(c *gin.Context) {
 }
 
 func (a *app) handleAdminUpdateSecurity(c *gin.Context) {
-	next2FAEnabled := strings.TrimSpace(c.PostForm("admin_2fa_enabled")) == "true"
-	next2FACode := strings.TrimSpace(c.PostForm("admin_2fa_code"))
-	if next2FAEnabled {
-		if next2FACode == "" {
-			next2FACode = strings.TrimSpace(a.cfg.Admin2FACode)
+	action := strings.TrimSpace(strings.ToLower(c.PostForm("admin_2fa_action")))
+	verificationCode := strings.TrimSpace(c.PostForm("admin_2fa_token"))
+	if action == "" {
+		if a.cfg.Admin2FAEnabled {
+			action = "rotate"
+		} else {
+			action = "enable"
 		}
-		if len(next2FACode) < 6 || len(next2FACode) > 16 {
-			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa", "failed", "invalid 2fa code length")
-			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("2FA 验证码长度必须在 6~16 位之间。"))
+	}
+
+	switch action {
+	case "disable":
+		valid, mode := validateAdmin2FA(a.cfg, verificationCode, time.Now().UTC())
+		if !valid {
+			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.disable", "failed", "invalid verification code")
+			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("关闭 2FA 需要先输入当前验证码或恢复码。"))
 			return
 		}
-	}
-
-	settings := map[string]string{
-		settingAdmin2FAEnabled: strconv.FormatBool(next2FAEnabled),
-	}
-	if next2FAEnabled {
-		settings[settingAdmin2FACode] = next2FACode
-	}
-	if !next2FAEnabled {
-		settings[settingAdmin2FACode] = ""
-	}
-	if err := a.upsertAdminSettings(c.Request.Context(), settings); err != nil {
-		a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa", "failed", "upsert failed")
-		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("保存 2FA 策略失败，请稍后重试。"))
+		if mode == "backup" {
+			consumed, consumeErr := a.consumeAdminBackupCodeIfMatched(verificationCode)
+			if consumeErr != nil || !consumed {
+				a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.disable", "failed", "backup consume failed")
+				c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("恢复码校验失败，请改用验证码。"))
+				return
+			}
+		}
+		disableSettings := map[string]string{
+			settingAdmin2FAEnabled:          "false",
+			settingAdmin2FAMethod:           "",
+			settingAdmin2FATOTPSecret:       "",
+			settingAdmin2FABackupHashesJSON: "[]",
+			settingAdmin2FACode:             "",
+		}
+		if err := a.upsertAdminSettings(c.Request.Context(), disableSettings); err != nil {
+			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.disable", "failed", "upsert failed")
+			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("关闭 2FA 失败，请稍后重试。"))
+			return
+		}
+		a.cfg.Admin2FAEnabled = false
+		a.cfg.Admin2FAMethod = ""
+		a.cfg.Admin2FASecret = ""
+		a.cfg.Admin2FABackupJSON = "[]"
+		a.cfg.Admin2FACode = ""
+		a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.disable", "ok", "2fa disabled")
+		c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("管理员 2FA 已关闭。"))
+		return
+	case "enable", "rotate":
+		secret, secretErr := generateTOTPSecret()
+		if secretErr != nil {
+			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.enable", "failed", "generate secret failed")
+			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("生成 TOTP 密钥失败，请稍后重试。"))
+			return
+		}
+		backupPlain, backupHashes, backupErr := generateBackupCodes()
+		if backupErr != nil {
+			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.enable", "failed", "generate backup failed")
+			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("生成恢复码失败，请稍后重试。"))
+			return
+		}
+		nextSettings := map[string]string{
+			settingAdmin2FAEnabled:          "true",
+			settingAdmin2FAMethod:           "totp",
+			settingAdmin2FATOTPSecret:       secret,
+			settingAdmin2FABackupHashesJSON: encodeBackupHashesJSON(backupHashes),
+			settingAdmin2FACode:             "",
+		}
+		if err := a.upsertAdminSettings(c.Request.Context(), nextSettings); err != nil {
+			a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.enable", "failed", "upsert failed")
+			c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("启用 2FA 失败，请稍后重试。"))
+			return
+		}
+		a.cfg.Admin2FAEnabled = true
+		a.cfg.Admin2FAMethod = "totp"
+		a.cfg.Admin2FASecret = secret
+		a.cfg.Admin2FABackupJSON = encodeBackupHashesJSON(backupHashes)
+		a.cfg.Admin2FACode = ""
+		a.setAdmin2FAFreshBackupCodes(backupPlain)
+		a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa.enable", "ok", "2fa enabled or rotated")
+		c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("管理员 TOTP 已生成，请在认证器绑定后立即验证。"))
+		return
+	default:
+		c.Redirect(http.StatusFound, "/admin?error="+url.QueryEscape("不支持的 2FA 操作。"))
 		return
 	}
-
-	a.cfg.Admin2FAEnabled = next2FAEnabled
-	if next2FAEnabled {
-		a.cfg.Admin2FACode = next2FACode
-	} else {
-		a.cfg.Admin2FACode = ""
-	}
-
-	a.writeAdminAuditFromRequest(c, "admin.security.update", "2fa", "ok", "2fa settings updated")
-	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("管理员 2FA 策略已更新。"))
 }
 
 func (a *app) handleAdminRevokeDevice(c *gin.Context) {
@@ -1115,6 +1309,17 @@ func (a *app) loadAdminMetrics(ctx context.Context) (adminDashboardMetrics, erro
 		return adminDashboardMetrics{}, err
 	}
 	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM vault_blobs`).Scan(&metrics.UsersWithVault); err != nil {
+		return adminDashboardMetrics{}, err
+	}
+	if err := a.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*)
+		 FROM user_sync_entitlements
+		 WHERE is_lifetime = FALSE
+		   AND expires_at IS NOT NULL
+		   AND expires_at > NOW()
+		   AND expires_at <= NOW() + INTERVAL '7 days'`,
+	).Scan(&metrics.ExpiringLicenses); err != nil {
 		return adminDashboardMetrics{}, err
 	}
 

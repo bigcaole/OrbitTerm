@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -17,7 +18,10 @@ const (
 	settingAdminPasswordHash        = "admin_password_hash"
 	settingAdminRole                = "admin_role"
 	settingAdmin2FAEnabled          = "admin_2fa_enabled"
+	settingAdmin2FAMethod           = "admin_2fa_method"
 	settingAdmin2FACode             = "admin_2fa_code"
+	settingAdmin2FATOTPSecret       = "admin_2fa_totp_secret"
+	settingAdmin2FABackupHashesJSON = "admin_2fa_backup_hashes_json"
 	settingAdminSessionHours        = "admin_session_hours"
 	settingClientDefaultSyncDomain  = "client_default_sync_domain"
 	settingClientSyncDomainLocked   = "client_sync_domain_locked"
@@ -145,8 +149,38 @@ func (a *app) loadBootstrapConfig(ctx context.Context) error {
 	if raw, ok := settings[settingAdmin2FAEnabled]; ok && strings.TrimSpace(raw) != "" {
 		a.cfg.Admin2FAEnabled = parseBoolString(raw, a.cfg.Admin2FAEnabled)
 	}
+	if raw, ok := settings[settingAdmin2FAMethod]; ok && strings.TrimSpace(raw) != "" {
+		a.cfg.Admin2FAMethod = strings.ToLower(strings.TrimSpace(raw))
+	}
 	if strings.TrimSpace(a.cfg.Admin2FACode) == "" {
 		a.cfg.Admin2FACode = strings.TrimSpace(settings[settingAdmin2FACode])
+	}
+	if strings.TrimSpace(a.cfg.Admin2FASecret) == "" {
+		a.cfg.Admin2FASecret = strings.TrimSpace(settings[settingAdmin2FATOTPSecret])
+	}
+	if strings.TrimSpace(a.cfg.Admin2FABackupJSON) == "" {
+		a.cfg.Admin2FABackupJSON = strings.TrimSpace(settings[settingAdmin2FABackupHashesJSON])
+	}
+	if a.cfg.Admin2FAEnabled {
+		if strings.TrimSpace(a.cfg.Admin2FAMethod) == "" {
+			if strings.TrimSpace(a.cfg.Admin2FASecret) != "" {
+				a.cfg.Admin2FAMethod = "totp"
+			} else if strings.TrimSpace(a.cfg.Admin2FACode) != "" {
+				a.cfg.Admin2FAMethod = "static"
+			}
+		}
+		if a.cfg.Admin2FAMethod == "totp" && strings.TrimSpace(a.cfg.Admin2FASecret) == "" && strings.TrimSpace(a.cfg.Admin2FACode) != "" {
+			a.cfg.Admin2FAMethod = "static"
+		}
+	}
+	if a.cfg.Admin2FAMethod != "totp" && a.cfg.Admin2FAMethod != "static" {
+		a.cfg.Admin2FAMethod = ""
+	}
+	if strings.TrimSpace(a.cfg.Admin2FABackupJSON) != "" {
+		var parsed []string
+		if err := json.Unmarshal([]byte(a.cfg.Admin2FABackupJSON), &parsed); err != nil {
+			a.cfg.Admin2FABackupJSON = "[]"
+		}
 	}
 	if rawHours, ok := settings[settingAdminSessionHours]; ok {
 		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(rawHours)); parseErr == nil && parsed > 0 && parsed <= 168 {
@@ -162,6 +196,7 @@ func (a *app) loadBootstrapConfig(ctx context.Context) error {
 		settingAdminWebEnabled:   strconv.FormatBool(a.cfg.AdminWebEnabled),
 		settingAdminRole:         normalizeAdminRole(a.cfg.AdminRole),
 		settingAdmin2FAEnabled:   strconv.FormatBool(a.cfg.Admin2FAEnabled),
+		settingAdmin2FAMethod:    strings.TrimSpace(strings.ToLower(a.cfg.Admin2FAMethod)),
 		settingAdminSessionHours: strconv.Itoa(a.cfg.AdminSessionHours),
 	}
 	if strings.TrimSpace(a.cfg.AdminUsername) != "" {
@@ -172,6 +207,12 @@ func (a *app) loadBootstrapConfig(ctx context.Context) error {
 	}
 	if strings.TrimSpace(a.cfg.Admin2FACode) != "" {
 		bootstrapSettings[settingAdmin2FACode] = strings.TrimSpace(a.cfg.Admin2FACode)
+	}
+	if strings.TrimSpace(a.cfg.Admin2FASecret) != "" {
+		bootstrapSettings[settingAdmin2FATOTPSecret] = strings.TrimSpace(a.cfg.Admin2FASecret)
+	}
+	if strings.TrimSpace(a.cfg.Admin2FABackupJSON) != "" {
+		bootstrapSettings[settingAdmin2FABackupHashesJSON] = strings.TrimSpace(a.cfg.Admin2FABackupJSON)
 	}
 
 	if err := a.upsertAdminSettings(ctx, bootstrapSettings); err != nil {

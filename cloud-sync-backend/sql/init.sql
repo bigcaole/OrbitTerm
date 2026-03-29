@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS user_sync_entitlements (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS user_2fa_totp (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  secret TEXT NOT NULL,
+  backup_code_hashes TEXT[] NOT NULL DEFAULT '{}',
+  enabled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
   id BIGSERIAL PRIMARY KEY,
   actor_username TEXT NOT NULL,
@@ -119,6 +127,7 @@ CREATE INDEX IF NOT EXISTS idx_user_devices_token_jti ON user_devices(current_to
 CREATE INDEX IF NOT EXISTS idx_sync_license_codes_created_at ON sync_license_codes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_license_codes_used_by_user ON sync_license_codes(used_by_user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sync_entitlements_expires_at ON user_sync_entitlements(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_2fa_totp_enabled_at ON user_2fa_totp(enabled_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_actor ON admin_audit_logs(actor_username);

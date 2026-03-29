@@ -517,6 +517,8 @@ function App(): JSX.Element {
   const hasCompletedOnboarding = useUiSettingsStore((state) => state.hasCompletedOnboarding);
   const hostUsageStats = useUiSettingsStore((state) => state.hostUsageStats);
   const recordHostConnection = useUiSettingsStore((state) => state.recordHostConnection);
+  const uiScalePercent = useUiSettingsStore((state) => state.uiScalePercent);
+  const contrastMode = useUiSettingsStore((state) => state.contrastMode);
   const applyTransferProgressEvent = useTransferStore((state) => state.applyProgressEvent);
   const appLogs = useAppLogStore((state) => state.logs);
   const clearAppLogs = useAppLogStore((state) => state.clearLogs);
@@ -2176,6 +2178,17 @@ function App(): JSX.Element {
     });
   };
 
+  const appScaleStyle = useMemo(() => {
+    if (uiScalePercent === 100) {
+      return undefined;
+    }
+    return {
+      fontSize: `${uiScalePercent}%`
+    };
+  }, [uiScalePercent]);
+
+  const appContrastClassName = contrastMode === 'high' ? 'contrast-[1.08] saturate-[1.03]' : '';
+
   if (!hasCompletedOnboarding) {
     return (
       <>
@@ -2195,7 +2208,7 @@ function App(): JSX.Element {
   }
 
   return (
-    <main className="h-screen w-screen overflow-hidden p-3 sm:p-4">
+    <main className={`h-screen w-screen overflow-hidden p-3 sm:p-4 ${appContrastClassName}`} style={appScaleStyle}>
       <section className="glass-card flex h-full w-full flex-col overflow-hidden rounded-3xl border border-frost-border bg-frost-panel shadow-glass">
         <header className="shrink-0 border-b border-white/55 px-5 py-4 sm:px-6">
           <div className="flex items-start justify-between gap-3">

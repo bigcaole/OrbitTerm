@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
+  CloudSyncRequestError,
   fetchCloudSyncPolicy,
   readCloudSyncPolicy,
   type CloudSyncPolicy
@@ -55,6 +56,9 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [otpCode, setOtpCode] = useState<string>('');
+  const [backupCode, setBackupCode] = useState<string>('');
+  const [show2FAInput, setShow2FAInput] = useState<boolean>(false);
   const [policy, setPolicy] = useState<CloudSyncPolicy | null>(null);
 
   useEffect(() => {
@@ -67,6 +71,9 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
     setApiBaseUrl(hints.apiBaseUrl);
     setEmail(hints.email);
     setPassword('');
+    setOtpCode('');
+    setBackupCode('');
+    setShow2FAInput(false);
   }, [open]);
 
   useEffect(() => {
@@ -141,11 +148,23 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
         ? latestPolicy.defaultSyncDomain
         : normalizedHints.apiBaseUrl;
     try {
-      await loginCloudAccount(effectiveApi, normalizedHints.email, password);
+      await loginCloudAccount(effectiveApi, normalizedHints.email, password, {
+        otpCode: otpCode.trim() || undefined,
+        backupCode: backupCode.trim() || undefined
+      });
       writeAuthHints({ ...normalizedHints, apiBaseUrl: effectiveApi });
       setPassword('');
+      setOtpCode('');
+      setBackupCode('');
+      setShow2FAInput(false);
       onSuccess();
     } catch (error) {
+      if (
+        error instanceof CloudSyncRequestError &&
+        (error.code === 'two_factor_required' || error.code === 'two_factor_invalid')
+      ) {
+        setShow2FAInput(true);
+      }
       const fallback = t('cloud.errorLogin');
       const message = error instanceof Error ? error.message : fallback;
       toast.error(message || fallback);
@@ -230,6 +249,50 @@ export function CloudAuthModal({ open, onSkip, onSuccess }: CloudAuthModalProps)
               value={password}
             />
           </div>
+
+          {show2FAInput ? (
+            <>
+              <div>
+                <label className="block text-xs text-slate-600" htmlFor="cloud-auth-otp">
+                  2FA 验证码（6 位）
+                </label>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+                  id="cloud-auth-otp"
+                  onChange={(event) => setOtpCode(event.target.value)}
+                  placeholder="例如：123456"
+                  type="text"
+                  value={otpCode}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-600" htmlFor="cloud-auth-backup-code">
+                  恢复码（可选）
+                </label>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-300"
+                  id="cloud-auth-backup-code"
+                  onChange={(event) => setBackupCode(event.target.value)}
+                  placeholder="例如：ABCD-1234"
+                  type="text"
+                  value={backupCode}
+                />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  已启用 2FA 的账号登录时，需要输入验证码或恢复码。
+                </p>
+              </div>
+            </>
+          ) : (
+            <button
+              className="text-left text-[11px] text-slate-500 underline decoration-dotted underline-offset-4 hover:text-slate-700"
+              onClick={() => {
+                setShow2FAInput(true);
+              }}
+              type="button"
+            >
+              已开启 2FA？点击填写验证码/恢复码
+            </button>
+          )}
         </div>
 
         {cloudSyncError ? (

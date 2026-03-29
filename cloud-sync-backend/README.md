@@ -53,8 +53,17 @@
 - `ADMIN_PASSWORD`：管理员明文密码（便捷方式，启动时会转为哈希，仅与 `ADMIN_PASSWORD_HASH` 二选一）
 - `ADMIN_PASSWORD_HASH`：管理员密码 bcrypt 哈希（更安全，推荐）
 - `ADMIN_2FA_ENABLED`：是否启用管理员 2FA 二次验证，默认 `false`
-- `ADMIN_2FA_CODE`：管理员 2FA 验证码（当 `ADMIN_2FA_ENABLED=true` 时必填）
+- `ADMIN_2FA_METHOD`：管理员 2FA 模式，支持 `totp` / `static`（默认会优先按 TOTP 处理）
+- `ADMIN_2FA_TOTP_SECRET`：管理员 TOTP 密钥（Base32，可留空并在 `/admin` 后台生成）
+- `ADMIN_2FA_BACKUP_HASHES_JSON`：管理员恢复码哈希数组（JSON 字符串，可留空）
+- `ADMIN_2FA_CODE`：管理员静态验证码（仅兼容历史 `static` 模式）
 - `ADMIN_SESSION_HOURS`：管理员登录会话时长（小时），默认 `12`
+- `BACKUP_AUTO_ENABLED`：是否启用自动逻辑备份，默认 `false`
+- `BACKUP_AUTO_INTERVAL_MINUTES`：自动备份间隔（分钟），默认 `1440`（每天）
+- `BACKUP_AUTO_RETENTION_COUNT`：备份保留份数，默认 `14`
+- `BACKUP_AUTO_OUTPUT_DIR`：自动备份输出目录，默认 `./data/exports`
+- `BACKUP_AUTO_INCLUDE_AUDIT_LOGS`：自动备份是否包含审计日志，默认 `false`
+- `BACKUP_AUTO_AUDIT_LIMIT`：包含审计日志时的最大条数，默认 `2000`
 
 ## 一键容器部署（推荐）
 项目已提供：
@@ -106,8 +115,14 @@ api:
     ADMIN_USERNAME: "admin"
     ADMIN_PASSWORD: "replace_with_a_strong_password"
     ADMIN_2FA_ENABLED: "false"
-    ADMIN_2FA_CODE: "123456"
+    ADMIN_2FA_METHOD: "totp"
     ADMIN_SESSION_HOURS: "12"
+    BACKUP_AUTO_ENABLED: "false"
+    BACKUP_AUTO_INTERVAL_MINUTES: "1440"
+    BACKUP_AUTO_RETENTION_COUNT: "14"
+    BACKUP_AUTO_OUTPUT_DIR: "/data/exports"
+    BACKUP_AUTO_INCLUDE_AUDIT_LOGS: "false"
+    BACKUP_AUTO_AUDIT_LIMIT: "2000"
   ports:
     - "8080:8080"
 ```

@@ -179,13 +179,7 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
           <input type="password" name="admin_password_confirm" minlength="8" maxlength="128" required />
         </label>
       </div>
-      <div class="row">
-        <span>启用管理员 2FA 验证</span>
-        <input type="checkbox" name="admin_2fa_enabled" value="true" />
-      </div>
-      <label>2FA 验证码（当开启 2FA 时必填，建议 6~8 位）
-        <input type="text" name="admin_2fa_code" maxlength="16" />
-      </label>
+      <p class="muted">初始化完成后，可在管理台“管理员安全状态”中启用 TOTP 2FA（二次验证）。</p>
       <div class="actions">
         <button type="submit">完成初始化并进入管理台</button>
       </div>
@@ -239,8 +233,6 @@ func (a *app) handleSetupSubmit(c *gin.Context) {
 	adminUsername := strings.TrimSpace(c.PostForm("admin_username"))
 	adminPassword := c.PostForm("admin_password")
 	adminPasswordConfirm := c.PostForm("admin_password_confirm")
-	admin2FAEnabled := strings.TrimSpace(c.PostForm("admin_2fa_enabled")) == "true"
-	admin2FACode := strings.TrimSpace(c.PostForm("admin_2fa_code"))
 	adminSessionHoursRaw := strings.TrimSpace(c.PostForm("admin_session_hours"))
 
 	if adminUsername == "" {
@@ -259,11 +251,6 @@ func (a *app) handleSetupSubmit(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/setup?error="+url.QueryEscape("两次输入的管理员密码不一致。"))
 		return
 	}
-	if admin2FAEnabled && admin2FACode == "" {
-		c.Redirect(http.StatusFound, "/setup?error="+url.QueryEscape("开启 2FA 时必须填写验证码。"))
-		return
-	}
-
 	adminSessionHours, err := strconv.Atoi(adminSessionHoursRaw)
 	if err != nil || adminSessionHours <= 0 || adminSessionHours > 168 {
 		c.Redirect(http.StatusFound, "/setup?error="+url.QueryEscape("管理员会话时长必须在 1~168 小时之间。"))
@@ -277,18 +264,17 @@ func (a *app) handleSetupSubmit(c *gin.Context) {
 	}
 
 	settings := map[string]string{
-		settingAdminWebEnabled:   strconv.FormatBool(true),
-		settingAdminUsername:     adminUsername,
-		settingAdminPasswordHash: string(hashBytes),
-		settingAdminRole:         "superadmin",
-		settingAdmin2FAEnabled:   strconv.FormatBool(admin2FAEnabled),
-		settingAdminSessionHours: strconv.Itoa(adminSessionHours),
+		settingAdminWebEnabled:          strconv.FormatBool(true),
+		settingAdminUsername:            adminUsername,
+		settingAdminPasswordHash:        string(hashBytes),
+		settingAdminRole:                "superadmin",
+		settingAdmin2FAEnabled:          "false",
+		settingAdmin2FAMethod:           "",
+		settingAdmin2FATOTPSecret:       "",
+		settingAdmin2FABackupHashesJSON: "[]",
+		settingAdminSessionHours:        strconv.Itoa(adminSessionHours),
 	}
-	if admin2FAEnabled {
-		settings[settingAdmin2FACode] = admin2FACode
-	} else {
-		settings[settingAdmin2FACode] = ""
-	}
+	settings[settingAdmin2FACode] = ""
 
 	if err := a.upsertAdminSettings(c.Request.Context(), settings); err != nil {
 		c.Redirect(http.StatusFound, "/setup?error="+url.QueryEscape("初始化保存失败，请稍后重试。"))
@@ -299,8 +285,11 @@ func (a *app) handleSetupSubmit(c *gin.Context) {
 	a.cfg.AdminUsername = adminUsername
 	a.cfg.AdminPasswordHash = string(hashBytes)
 	a.cfg.AdminRole = "superadmin"
-	a.cfg.Admin2FAEnabled = admin2FAEnabled
-	a.cfg.Admin2FACode = admin2FACode
+	a.cfg.Admin2FAEnabled = false
+	a.cfg.Admin2FAMethod = ""
+	a.cfg.Admin2FASecret = ""
+	a.cfg.Admin2FABackupJSON = "[]"
+	a.cfg.Admin2FACode = ""
 	a.cfg.AdminSessionHours = adminSessionHours
 
 	c.Redirect(http.StatusFound, "/admin?notice="+url.QueryEscape("初始化完成，请登录管理员账号。"))

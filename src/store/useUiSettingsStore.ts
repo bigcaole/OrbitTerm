@@ -8,6 +8,7 @@ import {
 } from '../i18n/core';
 
 export type CloseWindowAction = 'ask' | 'tray' | 'exit';
+export type UiContrastMode = 'standard' | 'high';
 
 interface UiSettingsState {
   terminalFontSize: number;
@@ -22,6 +23,8 @@ interface UiSettingsState {
   autoLockMinutes: number;
   closeWindowAction: CloseWindowAction;
   language: AppLanguage;
+  uiScalePercent: number;
+  contrastMode: UiContrastMode;
   snippetsPanelCollapsed: boolean;
   hasCompletedOnboarding: boolean;
   hostUsageStats: Record<string, { count: number; lastConnectedAt: number }>;
@@ -37,6 +40,8 @@ interface UiSettingsState {
   setAutoLockMinutes: (value: number) => void;
   setCloseWindowAction: (value: CloseWindowAction) => void;
   setLanguage: (value: AppLanguage) => void;
+  setUiScalePercent: (value: number) => void;
+  setContrastMode: (value: UiContrastMode) => void;
   setSnippetsPanelCollapsed: (value: boolean) => void;
   setHasCompletedOnboarding: (value: boolean) => void;
   recordHostConnection: (hostId: string) => void;
@@ -107,6 +112,13 @@ const normalizeCloseWindowAction = (
   return fallback;
 };
 
+const normalizeContrastMode = (value: unknown, fallback: UiContrastMode): UiContrastMode => {
+  if (value === 'standard' || value === 'high') {
+    return value;
+  }
+  return fallback;
+};
+
 export const useUiSettingsStore = create<UiSettingsState>()(
   persist(
     (set) => ({
@@ -123,6 +135,8 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       autoLockMinutes: 5,
       closeWindowAction: 'ask',
       language: detectDefaultAppLanguage(),
+      uiScalePercent: 100,
+      contrastMode: 'standard',
       snippetsPanelCollapsed: true,
       hasCompletedOnboarding: false,
       hostUsageStats: {},
@@ -165,6 +179,12 @@ export const useUiSettingsStore = create<UiSettingsState>()(
       },
       setLanguage: (value) => {
         set({ language: normalizeAppLanguage(value) });
+      },
+      setUiScalePercent: (value) => {
+        set({ uiScalePercent: clamp(Math.round(value), 85, 130) });
+      },
+      setContrastMode: (value) => {
+        set({ contrastMode: normalizeContrastMode(value, 'standard') });
       },
       setSnippetsPanelCollapsed: (value) => {
         set({ snippetsPanelCollapsed: value });
@@ -246,6 +266,11 @@ export const useUiSettingsStore = create<UiSettingsState>()(
             currentState.closeWindowAction
           ),
           language: normalizeAppLanguage(persisted.language),
+          uiScalePercent:
+            typeof persisted.uiScalePercent === 'number'
+              ? clamp(Math.round(persisted.uiScalePercent), 85, 130)
+              : currentState.uiScalePercent,
+          contrastMode: normalizeContrastMode(persisted.contrastMode, currentState.contrastMode),
           snippetsPanelCollapsed:
             typeof persisted.snippetsPanelCollapsed === 'boolean'
               ? persisted.snippetsPanelCollapsed
@@ -270,6 +295,8 @@ export const useUiSettingsStore = create<UiSettingsState>()(
         autoLockMinutes: state.autoLockMinutes,
         closeWindowAction: state.closeWindowAction,
         language: state.language,
+        uiScalePercent: state.uiScalePercent,
+        contrastMode: state.contrastMode,
         snippetsPanelCollapsed: state.snippetsPanelCollapsed,
         hasCompletedOnboarding: state.hasCompletedOnboarding,
         hostUsageStats: state.hostUsageStats
