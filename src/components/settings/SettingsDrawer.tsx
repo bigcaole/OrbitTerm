@@ -511,7 +511,7 @@ export function SettingsDrawer({
               ))}
             </select>
             <p className="text-[11px] text-slate-500">
-              已补齐 Nerd Font 符号回退链。若系统已安装 JetBrainsMono Nerd Font，文件夹/Git 分支图标会优先以原生 Nerd 字形渲染。
+              推荐安装 JetBrainsMono Nerd Font，可获得更完整的文件夹与 Git 图标显示效果。
             </p>
 
             <div className="flex items-center justify-between text-xs text-slate-600">
@@ -938,7 +938,7 @@ export function SettingsDrawer({
           >
             <h3 className="text-sm font-semibold text-slate-800">私有云同步</h3>
             <p className="text-xs text-slate-700">
-              登录入口已迁移到“解锁后弹层”。这里仅展示同步状态、手动拉取与退出账号。
+              这里可查看当前同步状态，并执行连接账号、立即拉取和退出登录。
             </p>
 
             <div className="flex flex-wrap gap-2">

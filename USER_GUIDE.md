@@ -1,349 +1,381 @@
-# OrbitTerm 商业级使用教程（逐页逐字段）
+# OrbitTerm 小白教程（从 0 到可用）
 
-## 1. 文档目标
-本教程面向最终用户与团队管理员，覆盖 OrbitTerm 的每个页面、每个核心字段、每个主要按钮，并给出可直接参考的填写示例与使用建议。
+本教程面向第一次接触 OrbitTerm 的用户，按最稳妥流程带你完成：
+- 服务器部署同步后端
+- Windows / macOS 客户端安装
+- 账号注册、登录与多端同步
+- 常见报错排查
 
-## 2. 页面总览
-1. 首次启动引导（4 步）
-2. 金库解锁页
-3. 仪表盘
-4. 主机添加向导（3 步）
-5. 终端会话区（多标签）
-6. SFTP 可视化管理区
-7. Orbit AI 助手
-8. Orbit Inspector（开发者诊断工具）
-9. 设置中心
-10. 关于轨连
+你可以把它当作“照着做就能跑通”的操作手册。
 
 ---
 
-## 3. 首次启动引导（4 步）
+## 1. 先明确 3 个概念
 
-### 3.1 第 1 步：欢迎页
-| 功能项 | 说明 | 示例 | 建议 |
+### 1.1 金库密码是什么
+- 金库密码是你本机解锁 OrbitTerm 数据的密码。
+- 它不上传到服务器。
+- 多设备要同步同一份数据，必须使用同一个金库密码。
+
+示例：
+- 正确做法：Windows 和 macOS 都用 `Orbit#2026!Vault` 解锁。
+- 错误做法：Windows 用 `A密码`，macOS 用 `B密码`，会导致同步包无法解密。
+
+### 1.2 同步账号是什么
+- 同步账号是邮箱 + 密码，用于连接你的私有同步服务。
+- 它和“金库密码”不是同一个东西。
+
+### 1.3 同步域名是什么
+- 同步域名就是后端服务地址。
+- 必须填完整 HTTPS 地址。
+
+示例：
+- `https://sync.example.com`（正确）
+- `sync.example.com`（不完整）
+- `http://sync.example.com`（生产环境不建议）
+
+---
+
+## 2. 部署前准备清单（先对照）
+
+你需要准备：
+1. 一台 Linux 服务器（建议 Ubuntu 22.04 或 24.04）。
+2. 一个域名（例如 `sync.example.com`），已解析到服务器公网 IP。
+3. 可访问 80/443 端口（用于 HTTPS 证书和外部访问）。
+4. 一台 Windows 客户端和一台 macOS 客户端（用于双端验证）。
+
+建议最低配置：
+- 1 核 CPU
+- 2GB 内存
+- 20GB 可用磁盘
+
+---
+
+## 3. 服务器部署（Docker 方式）
+
+> 目标：部署 OrbitTerm 同步后端，并让客户端可以通过 HTTPS 访问。
+
+### 3.1 安装 Docker（Ubuntu 示例）
+
+在服务器执行：
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable docker --now
+```
+
+验证：
+
+```bash
+docker --version
+docker compose version
+```
+
+看到版本号即表示安装成功。
+
+### 3.2 准备部署目录
+
+```bash
+mkdir -p /opt/orbitterm-sync
+cd /opt/orbitterm-sync
+```
+
+### 3.3 创建 `docker-compose.yml`
+
+把下面内容保存为 `/opt/orbitterm-sync/docker-compose.yml`：
+
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orbitterm-sync-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orbitterm_sync
+      POSTGRES_USER: orbitterm
+      POSTGRES_PASSWORD: "ReplaceWithStrongDbPassword"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbitterm -d orbitterm_sync"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/bigcaole/orbitterm-sync-backend:latest
+    container_name: orbitterm-sync-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "postgres://orbitterm:ReplaceWithStrongDbPassword@postgres:5432/orbitterm_sync?sslmode=disable"
+      JWT_SECRET: "ReplaceWithLongRandomStringAtLeast32Chars"
+      JWT_EXPIRE_HOURS: "720"
+      ALLOW_INSECURE_HTTP: "false"
+      CORS_ALLOW_ORIGINS: "https://sync.example.com"
+      MAX_REQUEST_BODY_BYTES: "4194304"
+      AUTH_RATE_LIMIT_PER_MIN: "30"
+      SYNC_RATE_LIMIT_PER_MIN: "120"
+      ADMIN_WEB_ENABLED: "true"
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: "ReplaceWithStrongAdminPassword"
+      ADMIN_2FA_ENABLED: "false"
+      ADMIN_2FA_METHOD: "totp"
+      ADMIN_SESSION_HOURS: "12"
+      BACKUP_AUTO_ENABLED: "false"
+      BACKUP_AUTO_INTERVAL_MINUTES: "1440"
+      BACKUP_AUTO_RETENTION_COUNT: "14"
+      BACKUP_AUTO_OUTPUT_DIR: "/data/exports"
+      BACKUP_AUTO_INCLUDE_AUDIT_LOGS: "false"
+      BACKUP_AUTO_AUDIT_LIMIT: "2000"
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  postgres_data:
+```
+
+### 3.4 启动容器
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+成功状态示例：
+- `orbitterm-sync-postgres` 为 `healthy`
+- `orbitterm-sync-api` 为 `running`
+
+### 3.5 查看后端日志
+
+```bash
+docker compose logs -f api
+```
+
+看到服务监听信息、且没有持续报错，即可继续下一步。
+
+---
+
+## 4. 配置 HTTPS（必须）
+
+OrbitTerm 同步服务建议只走 HTTPS。以下使用 Caddy 示例。
+
+### 4.1 安装 Caddy（Ubuntu）
+
+```bash
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+```
+
+### 4.2 配置反向代理
+
+编辑 `/etc/caddy/Caddyfile`：
+
+```caddy
+sync.example.com {
+  reverse_proxy 127.0.0.1:8080 {
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Ssl on
+  }
+}
+```
+
+重载配置：
+
+```bash
+sudo systemctl reload caddy
+```
+
+验证：
+
+```bash
+curl -s https://sync.example.com/healthz
+```
+
+返回示例：
+
+```json
+{"status":"ok"}
+```
+
+---
+
+## 5. 管理端首次登录
+
+如果你开启了 `ADMIN_WEB_ENABLED=true`，访问：
+
+- `https://sync.example.com/admin`
+
+登录账号使用 `docker-compose.yml` 里的：
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+
+建议首次登录后立刻做 3 件事：
+1. 修改管理员密码（或改为密码哈希方式）。
+2. 开启管理员 2FA。
+3. 在“备份”页面先手动做一次备份，确认备份链路可用。
+
+---
+
+## 6. Docker 变量怎么填（按小白理解）
+
+| 变量名 | 作用 | 建议值 | 填错后常见现象 |
 |---|---|---|---|
-| 欢迎信息 | 展示产品理念：安全、直观、智能 | 直接阅读 | 用于团队统一认知，建议首次完整阅读 |
-| 下一步 | 进入 E2EE 说明页 | 点击“下一步” | 首次部署人员必须完成 |
-| 上一步 | 返回上一页（第 1 步时不可用） | - | 正常现象 |
+| `DATABASE_URL` | 连接数据库 | 按示例拼接 | 后端启动失败 |
+| `JWT_SECRET` | 登录令牌签名密钥 | 32 位以上随机串 | 登录异常、会话异常 |
+| `ALLOW_INSECURE_HTTP` | 是否允许 HTTP | 生产填 `false` | 非 HTTPS 请求被拒绝 |
+| `CORS_ALLOW_ORIGINS` | 允许访问的来源域名 | `https://sync.example.com` | 某些前端请求被拦截 |
+| `AUTH_RATE_LIMIT_PER_MIN` | 注册/登录限流 | `30` | 频繁操作时提示太频繁 |
+| `SYNC_RATE_LIMIT_PER_MIN` | 同步限流 | `120` | 高频同步时返回 429 |
+| `ADMIN_WEB_ENABLED` | 是否启用管理端 | `true` | `/admin` 无法打开 |
+| `ADMIN_2FA_ENABLED` | 管理端是否启用 2FA | `true`（建议） | 登录时是否需要二次验证码 |
+| `BACKUP_AUTO_ENABLED` | 是否自动备份 | `true` 或 `false` | 无自动备份文件 |
 
-### 3.2 第 2 步：E2EE 说明页
-| 功能项 | 说明 | 示例 | 建议 |
-|---|---|---|---|
-| E2EE 说明文本 | 说明主机数据先本地加密再存储 | 直接阅读 | 建议纳入内部安全培训材料 |
-| 重要提示 | 明确“主密码丢失无法找回数据” | 直接阅读 | 应制定企业级主密码保管制度 |
-| 下一步 | 进入主密码设置页 | 点击“下一步” | 建议准备密码管理策略后再继续 |
-
-### 3.3 第 3 步：主密码设置页
-| 字段/按钮 | 说明 | 示例 | 校验/约束 |
-|---|---|---|---|
-| 主密码 | 用于解锁金库与派生解密密钥 | `Orbit#Ops2026!Secure` | 至少 12 位，需包含大小写字母、数字、特殊符号 |
-| 确认主密码 | 再次输入主密码，避免误输 | `Orbit#Ops2026!Secure` | 必须与主密码一致 |
-| 生成恢复密钥 | 生成离线保管用恢复字符串（可选） | `A1B2C3-D4E5F6-...` | 建议离线保存，不与主密码同处 |
-| 复制 | 将恢复密钥复制到剪贴板 | 点击“复制” | 复制失败时手动记录 |
-| 完成初始化 | 初始化金库并进入可用状态 | 点击“完成初始化” | 初始化失败会显示错误信息 |
-
-### 3.4 第 4 步：首次连接准备页
-| 功能项 | 说明 | 示例 | 建议 |
-|---|---|---|---|
-| 进入仪表盘 | 不预填任何主机模板，直接开始 | 点击“进入仪表盘” | 适合已有标准主机清单 |
-| 添加我的第一台服务器 | 自动填充一套示例主机模板 | 点击“添加我的第一台服务器” | 适合新用户快速熟悉流程 |
+说明：
+- 如果你当前只有客户端对接后端，不做浏览器跨站调用，`CORS_ALLOW_ORIGINS` 先填你的同步域名即可。
+- 该项即使先不细分，也不会影响客户端基本注册与同步。
 
 ---
 
-## 4. 金库解锁页
-| 字段/按钮 | 说明 | 示例 | 注意事项 |
-|---|---|---|---|
-| 主密码输入框 | 输入金库主密码并解锁 | `Orbit#Ops2026!Secure` | 支持 Enter 快速提交 |
-| 正在解锁状态 | 解锁中显示“正在解锁...” | 自动显示 | 解锁中请勿重复提交 |
-| 错误提示 | 主密码错误或校验失败时提示 | “解锁失败，请检查主密码” | 连续失败建议核对输入法与大小写 |
+## 7. Windows 客户端安装与初始化
+
+### 7.1 安装
+1. 打开发布页下载 Windows 安装包（`.msi` 或 `.exe`）。
+2. 双击安装，默认下一步即可。
+3. 首次启动若有防火墙提示，选择允许。
+
+### 7.2 首次引导
+1. 打开 OrbitTerm。
+2. 按引导设置金库密码。
+3. 进入仪表盘后，先不要急着加主机，先完成同步登录。
+
+金库密码示例：
+- `Orbit#2026!Vault`
 
 ---
 
-## 5. 仪表盘总览
+## 8. macOS 客户端安装与初始化
 
-### 5.1 顶部区域
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 设置中心 | 打开终端样式、主题、安全设置 | 点击“设置中心 (Cmd/Ctrl+,)” |
-| 关于轨连 | 查看版本、致谢、更新功能 | 点击“关于轨连” |
+### 8.1 安装
+1. 下载 `.dmg`。
+2. 把 `OrbitTerm.app` 拖入 `Applications`。
+3. 首次打开若被拦截，到系统“隐私与安全性”里允许打开。
 
-### 5.2 主机列表区域
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 主机卡片 | 显示主机名、用户名@地址:端口、身份名 | `prod-app-01 / root@10.20.1.8:22 / 身份：生产密钥` |
-| 新建 Tab | 以当前主机新建会话标签 | 点击“新建 Tab” |
-
-### 5.3 终端工具栏
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 新建标签 | 创建新的 SSH 会话标签 | Cmd/Ctrl+T |
-| 查看连接日志 | 打开 Orbit Inspector | 点击“查看连接日志” |
-| 同步路径 | 将当前终端路径同步到 SFTP | 点击“同步路径” |
-| 关闭当前 | 关闭当前激活会话 | Cmd/Ctrl+W |
-
-### 5.4 会话标签栏
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 标签名 | 显示会话标题（通常为主机名） | `生产应用服务器` |
-| 点击标签 | 切换激活会话 | 点击标签文字 |
-| 关闭标签 × | 关闭该会话并释放资源 | 点击 `×` |
-
-### 5.5 终端提示区
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 错误提示 + 问问 AI 怎么修 | 出现 SSH 错误时可直接跳诊断 | “会话通道已关闭” + 按钮 |
-| 自动重连提示 | 非正常断连时显示重连进度 | “正在尝试自动重连...（第 2/4 次）” |
+### 8.2 首次引导
+1. 打开 OrbitTerm。
+2. 使用和 Windows 完全相同的金库密码初始化。
+3. 解锁后进入仪表盘。
 
 ---
 
-## 6. 主机添加向导（3 步）
+## 9. 注册账号并连接同步
 
-## 6.1 第 1 步：基础信息
-| 字段 | 说明 | 示例 | 约束 |
-|---|---|---|---|
-| 主机名称 | 业务可读名称 | `生产应用服务器` | 2-50 字符 |
-| 主机地址 | 支持域名/IPv4/[IPv6] | `10.10.10.8`、`host.example.com`、`[2001:db8::8]` | 必须为合法地址格式 |
-| 端口 | SSH 端口 | `22`、`2222` | 1-65535 整数 |
-| 备注说明 | 运维备注，不影响连接 | `订单服务节点，窗口周三 02:00-04:00` | 最长 160 字符 |
-| 身份绑定模式 | 选择已有身份或新建身份 | `选择已有身份` / `新建身份` | 建议生产使用统一身份 |
-| 已有身份 | 复用身份的用户名和认证材料 | `生产服务器密钥 (root)` | 选择已有身份时必填 |
-| 新身份名称 | 新建身份的显示名称 | `生产服务器密钥` | 2-50 字符 |
-| 身份用户名 | 该身份登录用户名 | `root`、`ubuntu`、`ec2-user` | 必填，最长 64 字符 |
+以下步骤在 Windows 和 macOS 都做一次。
 
-## 6.2 第 2 步：认证配置
+1. 解锁金库后，点击“连接账号”。
+2. 服务地址填写：`https://sync.example.com`
+3. 点击“注册”，填写邮箱和密码。
+4. 注册成功后会自动登录（或手动登录）。
 
-### A. 当第 1 步选择“已有身份”
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 已复用身份说明 | 展示当前复用身份名称与用户名 | `身份：生产服务器密钥，用户：root` |
-| 下一步：高级选项 | 进入第 3 步 | 点击按钮 |
+示例：
+- 邮箱：`ops-team@example.com`
+- 密码：`Team#Sync2026!`
 
-### B. 当第 1 步选择“新建身份”
-| 字段 | 说明 | 示例 | 约束 |
-|---|---|---|---|
-| 认证方式 | 密码认证 / 私钥认证 | `私钥认证` | 必选 |
-| 登录密码 | 密码登录凭据 | `Ops#2026Secure` | 选择密码认证时至少 6 位 |
-| 私钥内容 | 完整私钥文本 | `-----BEGIN OPENSSH PRIVATE KEY----- ...` | 选择私钥认证时需完整粘贴 |
-| 私钥口令（可选） | 解锁加密私钥用 | `MyKeyPass#2026` | 私钥未加密可留空 |
-
-## 6.3 第 3 步：高级选项
-| 字段 | 说明 | 示例 | 约束 |
-|---|---|---|---|
-| 选择跳板机（推荐） | 从已有主机中选 ProxyJump | `bastion-sh` | 可为空 |
-| 手动跳板地址（可选） | 手工指定 `host:port` | `bastion.example.com:22` | 最长 128 字符 |
-| 连接超时（秒） | 连接等待上限 | `10`、`30` | 1-120 |
-| 启用 KeepAlive | 防“假死”断连 | 开启 | 建议开启 |
-| KeepAlive 间隔（秒） | 保活发送周期 | `30`、`60` | 5-600 |
-| 启用压缩 | 降低带宽占用 | 开启 | 低带宽建议开启 |
-| 严格主机指纹校验 | 防中间人攻击 | 开启 | 生产建议开启 |
-| 标签（可选） | 便于检索分组 | `生产,数据库,华东` | 总长 ≤ 120 字符 |
-| 完成并保存主机 | 提交并写入加密金库 | 点击按钮 | 保存中会显示“保存中...” |
+如果提示“创建账号失败，请稍后再试”：
+1. 先看服务器日志：`docker compose logs -f api`
+2. 确认域名可访问：`curl -s https://sync.example.com/healthz`
+3. 检查反向代理是否带了 HTTPS 转发头。
 
 ---
 
-## 7. 终端会话区（多标签）
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 终端渲染 | 支持中文对齐、WebGL 加速回退、窗口自适应 | 编译日志、中文路径输出 |
-| 高频输出保护 | 极高频输出时自动限流，避免界面阻塞 | 大规模构建输出场景 |
-| 过载提示 | 超出缓冲上限会提示丢弃历史输出 | “输出过载：已丢弃部分历史输出” |
-| 会话关闭回收 | 关闭标签后销毁对应实例与会话 | 长时间运行后内存稳定 |
+## 10. 第一次做多端同步（标准流程）
+
+### 10.1 在 Windows 端操作
+1. 添加一台测试主机，例如：
+   - 名称：`test-ubuntu-01`
+   - 地址：`192.168.1.30`
+   - 端口：`22`
+2. 保存后等待几秒（让自动推送完成）。
+
+### 10.2 在 macOS 端操作
+1. 保持登录同一同步账号。
+2. 打开设置中的同步区域。
+3. 点击“立即拉取”。
+4. 返回主机列表，确认出现 `test-ubuntu-01`。
+
+### 10.3 校验成功标准
+- 两端主机列表一致。
+- 在任一端新增/修改备注，另一端拉取后可见。
+- 同步日志不出现“数据格式无效”“版本不兼容”等错误。
 
 ---
 
-## 8. SFTP 管理区（Finder 风格）
+## 11. 日常使用建议（避免踩坑）
 
-### 8.1 顶部工具
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 当前路径 | 显示当前远程目录 | `/var/log/nginx` |
-| 刷新 | 重新读取目录 | 点击“刷新” |
-| 新建目录 | 在当前路径创建目录 | 输入 `release-2026` |
-| 上传文件 | 上传本地文件到当前目录 | 上传 `deploy.sh` |
-| 面包屑导航 | 快速跳转父目录 | 点击 `/`、`var`、`log` |
-
-### 8.2 文件列表
-| 列 | 说明 | 示例 |
-|---|---|---|
-| 名称 | 文件/目录名及类型图标 | `📁 scripts`、`📜 deploy.sh` |
-| 大小 | 文件大小，目录显示 `-` | `13.2 KB` |
-| 修改时间 | 最近修改时间 | `2026/03/25 14:08:11` |
-
-### 8.3 右键菜单
-| 菜单项 | 说明 | 示例 |
-|---|---|---|
-| 下载 | 下载文件到本地 | 下载 `nginx.conf` |
-| 在终端中打开 | 对目录执行 `cd` 并回车 | 目录 `/opt/app` |
-| 在终端运行 | 对 `.sh` / `.py` 生成并执行命令 | `bash "/opt/app/deploy.sh"` |
-| 重命名 | 修改文件或目录名称 | `app.log` → `app.log.1` |
-| 删除 | 删除文件或目录（目录递归） | 删除 `old_release` |
-| 复制路径 | 复制远程绝对路径 | `/etc/nginx/nginx.conf` |
-
-### 8.4 上传进度
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 上传进度条 | 显示每个上传任务进度百分比 | `58%` → `100%` |
-| 上传完成提示 | 完成后弹出提示并自动刷新目录 | “上传完成：deploy.sh” |
-
-### 8.5 大目录性能
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 虚拟滚动 | 目录项超过 1000 时仅渲染可见区 | `当前目录包含 13420 项` |
+1. 新设备首次登录后，先“立即拉取”，再编辑数据。
+2. 多设备都使用同一金库密码。
+3. 服务器升级前，先做管理端备份。
+4. 管理端开启 2FA，管理员密码与用户密码不要复用。
+5. 不要将 `127.0.0.1:8080` 直接暴露公网，统一走 HTTPS 反代。
 
 ---
 
-## 9. 轨连灵思（Orbit AI）
-| 字段/按钮 | 说明 | 示例 |
-|---|---|---|
-| 输入框 | 输入自然语言目标 | `查看占用 80 端口的进程` |
-| 生成命令 | 调用 AI 生成可执行命令 | 输出 `lsof -i :80` |
-| 复制 | 复制生成结果 | 点击“复制” |
-| 填入终端 | 将命令填入当前会话输入区 | 点击“填入终端” |
-| 风险提示 | 提醒人工复核高风险命令 | 删除类命令需二次确认 |
-| 快捷键 | 呼出 AI 面板 | Cmd/Ctrl+K |
+## 12. 常见问题速查
 
-常用输入示例：
-1. `查看占用 443 端口的进程`
-2. `查找大于 100M 的日志文件`
-3. `查看最近 200 行系统日志`
+### Q1：客户端能登录，但同步失败
+可能原因：
+- 两端金库密码不一致
+- 同步域名填错（如漏写 `https://`）
+- 代理未正确转发 HTTPS 头
 
----
+建议排查顺序：
+1. 先确认两端金库密码一致。
+2. 重新手动拉取一次。
+3. 查看后端日志定位错误。
 
-## 10. Orbit Inspector（开发者诊断工具）
+### Q2：提示 429
+含义：请求太频繁，触发限流。  
+处理：稍等 30~60 秒再试，或在后端调大限流值。
 
-### 10.1 打开方式
-1. 终端工具栏点击“查看连接日志”。
-2. 出现 SSH 错误时，点击“问问 AI 怎么修”。
+### Q3：提示 413
+含义：单次同步数据包超过后端限制。  
+处理：增大 `MAX_REQUEST_BODY_BYTES`。
 
-### 10.2 健康检查区
-| 字段/项 | 说明 | 示例 |
-|---|---|---|
-| 网络权限 | 检查基础网络解析能力 | `网络解析可用` |
-| 数据目录权限 | 检查金库存储目录可写 | `应用数据目录读写正常` |
-| WebView 运行时 | 检查系统运行时状态 | `已检测到 WebView2 Runtime ...` |
-| 重新检查 | 手动再次执行健康检查 | 点击“重新检查” |
-
-### 10.3 AI 故障解释区
-| 字段/按钮 | 说明 | 示例 |
-|---|---|---|
-| 当前错误 | 展示最近 SSH 错误摘要 | `认证失败：请确认用户名、密码或私钥` |
-| 问问 AI 怎么修 | 结合错误与日志给出命令级建议 | 生成 `ssh -vvv ...`、`nslookup ...` 等 |
-| Provider | 显示 AI 提供方 | `openai` / `claude` |
-| 建议内容 | 中文解释 + 3 条可执行命令 | 分步骤排查文本 |
-| 风险提示 | 提醒危险命令需人工复核 | 始终显示 |
-
-### 10.4 配置备份区
-| 字段/按钮 | 说明 | 示例 |
-|---|---|---|
-| 导出加密备份文件 | 将加密金库导出到手动选择路径 | `orbitterm-vault-backup-20260325.bin` |
-
-### 10.5 连接日志区
-| 字段 | 说明 | 示例 |
-|---|---|---|
-| level | 日志级别 | `info`、`warn`、`error` |
-| stage | 阶段标签 | `kex`、`connect`、`auth` |
-| message | 诊断消息正文 | `第 1/2 跳 10.0.0.8:22 认证成功` |
-| timestamp | 事件时间 | `2026/03/25 19:45:10` |
-
-说明：日志会展示握手与认证流程，但不会输出密码明文。
+### Q4：`/admin` 打不开
+检查：
+1. `ADMIN_WEB_ENABLED=true`
+2. 域名与 HTTPS 正常
+3. Caddy/Nginx 是否正确反代到 `127.0.0.1:8080`
 
 ---
 
-## 11. 设置中心（逐字段）
-| 字段/按钮 | 说明 | 示例 |
-|---|---|---|
-| 字体家族 | 设置终端字体风格 | `Sarasa Mono SC`、`JetBrains Mono` |
-| 字体大小 | 调整终端字体大小 | `14px`、`16px` |
-| 终端背景透明度 | 控制终端面板透明度 | `92%` |
-| 磨砂强度 | 控制背景模糊程度 | `10px` |
-| 主题配色 | 选择品牌主题预设 | `深屿蓝`、`暮海黑`、`霜川` |
-| 自动锁屏 | 隐藏或闲置 5 分钟自动锁定 | 开启（推荐） |
-| 关于轨连 | 打开关于弹窗 | 点击按钮 |
+## 13. 部署完成后的自检清单
 
----
+全部满足即表示部署成功：
+1. `https://sync.example.com/healthz` 返回 `{"status":"ok"}`。
+2. Windows 可注册/登录同步账号。
+3. macOS 可登录同账号并拉取到 Windows 的数据。
+4. `/admin` 可登录。
+5. 至少完成一次手动备份。
 
-## 12. 关于轨连（逐字段）
-| 功能项 | 说明 | 示例 |
-|---|---|---|
-| 版本号 | 显示当前应用版本 | `版本 0.1.0` |
-| 致谢 | 展示核心技术与开源致谢 | React、Tauri、Rust、xterm.js、russh |
-| GitHub | 打开项目主页 | 点击“GitHub” |
-| 官网 | 打开官网 | 点击“官网” |
-| 检查更新 | 查询是否有新版本 | 点击“检查更新” |
-| 下载安装 | 下载并安装已检测到的更新 | 点击“下载安装” |
-
----
-
-## 13. 商业级实战流程
-
-### 13.1 生产主机标准接入流程
-1. 先在向导第 1 步建立清晰主机命名规范，例如 `prod-api-sh-01`。
-2. 统一复用“生产服务器密钥”身份，减少凭据分散。
-3. 在高级选项开启 KeepAlive 与严格主机指纹校验。
-4. 保存后立即新建 Tab 验证可用性。
-5. 在 SFTP 上传部署脚本并通过右键“在终端运行”执行。
-
-### 13.2 跳板机链路接入流程
-1. 先录入跳板机主机并确保可连接。
-2. 在目标主机高级选项中选择跳板机。
-3. 必要时补充手动跳板地址作为备用。
-4. 连接失败时进入 Inspector 查看 `connect/auth` 阶段日志。
-
-### 13.3 异常排障流程
-1. 看到终端错误后，点击“问问 AI 怎么修”。
-2. 在 Inspector 查看 AI 建议与连接日志。
-3. 优先执行低风险排查命令（网络、DNS、端口、认证链路）。
-4. 排障完成后导出加密备份，固化当下稳定配置。
-
----
-
-## 14. 运营与安全建议
-1. 主密码至少每 90 天轮换一次。
-2. 生产环境优先私钥认证，避免弱口令。
-3. 团队统一身份命名规范，例如“环境-系统-用途”。
-4. 任何 AI 生成命令执行前必须人工复核。
-5. 关键变更前后各导出一次加密备份。
-6. 保持自动锁屏开启，防止离席泄露。
-
----
-
-## 15. 常见问题（FAQ）
-
-### Q1：忘记主密码怎么办？
-A：无法找回。请使用你保存的恢复策略或历史加密备份进行恢复。
-
-### Q2：为什么“填入终端”按钮不可用？
-A：当前没有活动会话。请先连接至少一个 SSH 标签页。
-
-### Q3：SFTP 看不到文件？
-A：先确认已建立 SSH 会话，再检查远端目录权限与路径是否正确。
-
-### Q4：更新检查失败怎么办？
-A：先在 Inspector 执行健康检查，确认网络与系统运行时状态，再重试。
-
-### Q5：大目录会不会卡顿？
-A：超过 1000 项时会自动启用虚拟滚动，仅渲染可见区域。
-
----
-
-## 16. 全局快捷键与通知
-
-### 16.1 全局快捷键
-| 快捷键 | 功能 | 说明 |
-|---|---|---|
-| Cmd/Ctrl + T | 新建终端标签 | 在当前仪表盘快速创建会话 |
-| Cmd/Ctrl + W | 关闭当前标签 | 关闭当前激活会话 |
-| Cmd/Ctrl + K | 打开 AI 助手 | 呼出“轨连灵思”命令面板 |
-| Cmd/Ctrl + , | 打开设置中心 | 进入字体、主题、安全配置 |
-| Enter（解锁页） | 提交解锁 | 在主密码输入框中直接解锁 |
-| Esc（AI 面板） | 关闭 AI 面板 | 快速退出 AI 浮窗 |
-
-### 16.2 全局通知（Toast）
-| 通知场景 | 触发时机 | 示例 |
-|---|---|---|
-| 保存成功 | 主机配置写入金库成功 | `主机配置已保存到金库` |
-| 自动锁屏 | 隐藏或闲置达到锁定条件 | `金库已自动锁定` |
-| SSH 中断 | 会话意外断开 | `SSH 会话中断：生产应用服务器` |
-| 自动重连结果 | 自动重连成功或失败 | `已自动重连...` / `自动重连失败...` |
-| SFTP 异常 | 上传、下载、删除等失败 | `SFTP 操作未完成，请检查路径或权限` |
-| 备份导出 | 导出加密备份成功或失败 | `加密备份导出成功` |
+如果你按本文一步步执行，基本可以完成从 0 到可用的全流程部署。
