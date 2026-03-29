@@ -131,7 +131,7 @@ export function AboutOrbitTermModal({ open, onClose, releaseNotice }: AboutOrbit
             </div>
           )}
           <p className="mt-3 text-[11px] leading-5 text-[#8aa4cb]">
-            应用内已移除直接更新功能，自动检测到新版本后会在本页面提示你下载。
+            如检测到可下载的新版本，本页面会提醒你前往下载页更新。
           </p>
         </section>
       </div>
